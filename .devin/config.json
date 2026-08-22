@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(**)",
+      "Exec(git)",
+      "Exec(gradlew.bat)",
+      "Exec(./gradlew)",
+      "Exec(gradlew)"
+    ],
+    "deny": [
+      "Exec(rm -rf)",
+      "Exec(git push --force)",
+      "Exec(git rebase)"
+    ]
+  },
+  "read_config_from": {
+    "cursor": true,
+    "windsurf": true,
+    "claude": true
+  }
+}
