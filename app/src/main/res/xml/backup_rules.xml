@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Правила Auto Backup для Android 11 и ниже.
+    Включаем DataStore Preferences (files/datastore/settings.preferences_pb).
+    Кэши и no_backup исключаются Android-ом по умолчанию.
+
+    Для Android 12+ используется res/xml/data_extraction_rules.xml.
+-->
+<full-backup-content>
+    <include domain="file" path="datastore/" />
+</full-backup-content>
