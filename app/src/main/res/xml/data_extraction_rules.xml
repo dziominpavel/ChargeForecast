@@ -2,15 +2,13 @@
 <!--
     Правила извлечения данных для Android 12+.
     cloud-backup — бэкап в Google One; device-transfer — прямая передача между устройствами.
-    Включаем DataStore Preferences; кэши и no_backup исключаются по умолчанию.
+    Пользовательских данных для бэкапа нет (история не хранится); кэши и no_backup исключаются по умолчанию.
 
     Для Android 11 и ниже используется res/xml/backup_rules.xml.
 -->
 <data-extraction-rules>
     <cloud-backup>
-        <include domain="file" path="datastore/" />
     </cloud-backup>
     <device-transfer>
-        <include domain="file" path="datastore/" />
     </device-transfer>
 </data-extraction-rules>
