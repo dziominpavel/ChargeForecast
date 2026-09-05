@@ -34,20 +34,65 @@ class InstantSpeedTest {
     }
 
     @Test
-    fun sessionMax_keepsPeakIgnoringDips() {
-        assertEquals(2_000_000L, InstantSpeedEstimator.updateSessionMax(null, 2_000_000L))
+    fun emaCurrent_firstSample_returnsCurrent() {
         assertEquals(
             2_000_000L,
-            InstantSpeedEstimator.updateSessionMax(2_000_000L, 1_200_000L)
+            InstantSpeedEstimator.updateEmaCurrentUa(null, 2_000_000L, 10_000L)
+        )
+    }
+
+    @Test
+    fun emaCurrent_dip_pulledDownGradually() {
+        // Пик держал бы 3.0 млн навсегда; EMA после падения плавно снижается.
+        val afterDip = InstantSpeedEstimator.updateEmaCurrentUa(3_000_000L, 1_000_000L, 10_000L)
+        assertTrue(
+            "EMA должна лечь между 1.0 и 3.0 млн, получили $afterDip",
+            afterDip!! in 1_100_000L..2_900_000L
+        )
+        val later = InstantSpeedEstimator.updateEmaCurrentUa(afterDip, 1_000_000L, 30_000L)
+        assertTrue("через 30 сек EMA почти у 1.0 млн: $later", later!! < 1_600_000L)
+    }
+
+    @Test
+    fun emaCurrent_spike_doesNotJumpToPeak() {
+        // Один выброс драйвера лишь приподнимает EMA, а не ставит её на пик.
+        val ema = InstantSpeedEstimator.updateEmaCurrentUa(2_000_000L, 6_000_000L, 10_000L)
+        assertTrue("EMA после выброса должна быть < 4.0 млн: $ema", ema!! < 4_000_000L)
+    }
+
+    @Test
+    fun emaCurrent_garbageKeepsPrevious() {
+        assertEquals(
+            2_000_000L,
+            InstantSpeedEstimator.updateEmaCurrentUa(2_000_000L, null, 10_000L)
         )
         assertEquals(
-            3_000_000L,
-            InstantSpeedEstimator.updateSessionMax(2_000_000L, 3_000_000L)
+            2_000_000L,
+            InstantSpeedEstimator.updateEmaCurrentUa(2_000_000L, 0L, 10_000L)
         )
-        // Мусор вместо тока пик не портит.
-        assertEquals(2_000_000L, InstantSpeedEstimator.updateSessionMax(2_000_000L, null))
-        assertEquals(2_000_000L, InstantSpeedEstimator.updateSessionMax(2_000_000L, 0L))
-        assertEquals(2_000_000L, InstantSpeedEstimator.updateSessionMax(2_000_000L, -50L))
+        assertEquals(
+            2_000_000L,
+            InstantSpeedEstimator.updateEmaCurrentUa(2_000_000L, -50L, 10_000L)
+        )
+    }
+
+    @Test
+    fun emaCurrent_ramp_convergesToSteadyCurrent() {
+        // Регрессия «рампа 0.2 → 2.4 А за 60 сек»: EMA сходитcя к ровному
+        // току и не запоминает рампу как пик.
+        var ema: Long? = null
+        for (t in 0..5) {
+            ema = InstantSpeedEstimator.updateEmaCurrentUa(
+                ema, 200_000L + t * 2_200_000L / 5, 10_000L
+            )
+        }
+        repeat(40) {
+            ema = InstantSpeedEstimator.updateEmaCurrentUa(ema, 2_400_000L, 10_000L)
+        }
+        assertTrue(
+            "EMA должна сойтись к 2.4 млн ±10%, получили $ema",
+            abs(ema!! - 2_400_000L) < 240_000L
+        )
     }
 
     @Test

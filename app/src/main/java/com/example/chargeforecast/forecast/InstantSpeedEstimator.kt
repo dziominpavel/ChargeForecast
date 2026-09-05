@@ -1,9 +1,13 @@
 package com.example.chargeforecast.forecast
 
+import kotlin.math.exp
+import kotlin.math.roundToLong
+
 // Грубая мгновенная оценка скорости с первых секунд сессии:
 // ёмкость выводится из счётчика остатка и уровня, скорость — из тока.
 // Точность низкая (ток плавает, уровень грубый), но цифры есть сразу;
-// по мере набора измеренной скорости вес instant-оценки падает до нуля.
+// в fusion её вес доминирует только в первые секунды, дальше ведут
+// измеренные спидометры (S1/S3).
 // Чистый объект — полностью тестируем на JVM.
 object InstantSpeedEstimator {
 
@@ -21,13 +25,18 @@ object InstantSpeedEstimator {
         return currentUa.toFloat() / capacityUah.toFloat() * 100f / 60f
     }
 
-    // Максимум тока за сессию: блок раскачивается первые минуты и ток
-    // растёт (0.1 → 1.0 %/мин на глазах), плюс включённый экран отъедает
-    // часть. Для instant-оценки берём пик — он ближе к установившемуся.
-    fun updateSessionMax(previousMaxUa: Long?, currentUa: Long?): Long? {
-        if (currentUa == null || currentUa <= 0) return previousMaxUa
-        if (previousMaxUa == null || previousMaxUa <= 0) return currentUa
-        return maxOf(previousMaxUa, currentUa)
+    // Ток для instant-оценки: EMA с постоянной времени ~15 сек вместо
+    // пика сессии. Пик запоминал рампу и выбросы драйвера навсегда
+    // (завышенный старт «25 мин»); EMA гасит и рампу, и выбросы.
+    // Мусор вместо тока (null/0/отрицательный) предыдущую EMA не портит.
+    const val EMA_TAU_MS = 15_000L
+
+    fun updateEmaCurrentUa(previousEmaUa: Long?, currentUa: Long?, dtMs: Long): Long? {
+        if (currentUa == null || currentUa <= 0L) return previousEmaUa
+        val prev = previousEmaUa
+        if (prev == null || prev <= 0L) return currentUa
+        val alpha = 1f - exp(-dtMs.coerceAtLeast(0L).toFloat() / EMA_TAU_MS)
+        return (prev + alpha * (currentUa - prev)).roundToLong()
     }
 
     // Ниже — мусор рампы, а не зарядка (даёт «1000 часов» остатка).

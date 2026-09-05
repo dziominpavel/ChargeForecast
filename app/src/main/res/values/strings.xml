@@ -1,21 +1,15 @@
 <resources>
     <string name="app_name">ChargeForecast</string>
 
-    <!-- Шторка -->
-    <string name="notif_channel_name">Прогноз зарядки</string>
-    <string name="notif_channel_desc">Текущий уровень, скорость и время до полной зарядки</string>
-    <string name="notif_title_level">Зарядка %1$d%%</string>
-    <string name="notif_text_forecast">%1$s %%/мин · осталось %2$s · %3$s</string>
-    <string name="notif_fallback_title">Телефон на зарядке</string>
-    <string name="notif_fallback_text">Откройте ChargeForecast, чтобы увидеть прогноз до 100%</string>
-
     <!-- Экран сессии -->
     <string name="session_not_charging_title">Не на зарядке</string>
     <string name="session_not_charging_desc">Подключите кабель — здесь появятся скорость зарядки и прогноз времени до 100%.</string>
     <string name="session_collecting">Собираю данные…</string>
+    <string name="session_measuring">Измеряю… %1$d с</string>
     <string name="session_charged">Заряжено</string>
     <string name="session_accuracy_approx">примерно</string>
     <string name="session_accuracy_precise">точно</string>
+    <string name="session_accuracy_refining">уточняю</string>
     <string name="session_level">%1$d%%</string>
     <string name="session_speed">%1$s %%/мин</string>
     <string name="session_remaining">Осталось %1$s</string>
@@ -27,18 +21,8 @@
     <string name="session_live_current_a">%1$s А</string>
     <string name="session_live_voltage">%1$s В</string>
     <string name="session_live_temp">%1$s °C</string>
-    <string name="session_last_speed">Прошлая зарядка: ~%1$s %%/мин</string>
-    <string name="session_notif_stale">Шторка не обновляется — разрешите уведомления и автозапуск для приложения в настройках телефона.</string>
-    <string name="session_retry_notifications">Разрешить уведомления</string>
-    <string name="session_notifications_denied">Уведомления запрещены — прогноз виден только на этом экране.</string>
-
-    <!-- Время -->
-    <string name="time_less_minute">меньше минуты</string>
-    <string name="time_minutes">%1$d мин</string>
-    <string name="time_hours">%1$d ч</string>
-    <string name="time_hours_minutes">%1$d ч %2$d мин</string>
-
-    <!-- Ошибки -->
-    <string name="error_service_denied">Система запретила фоновый запуск — откройте приложение при подключённой зарядке.</string>
-    <string name="error_notif_denied">Нет разрешения на уведомления — шторка недоступна, прогноз только здесь.</string>
+    <!-- Время: остаток выдаётся каждую секунду, ч/мин/с -->
+    <string name="time_seconds">%1$d с</string>
+    <string name="time_minutes_seconds">%1$d мин %2$d с</string>
+    <string name="time_hours_minutes_seconds">%1$d ч %2$d мин %3$d с</string>
 </resources>

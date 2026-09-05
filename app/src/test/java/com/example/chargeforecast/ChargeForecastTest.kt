@@ -1,8 +1,13 @@
-package com.example.chargeforecast
+﻿package com.example.chargeforecast
 
+import com.example.chargeforecast.battery.BatterySnapshot
+import com.example.chargeforecast.battery.ChargeType
 import com.example.chargeforecast.forecast.ChargeForecaster
 import com.example.chargeforecast.forecast.ChargeSpeedCalculator
 import com.example.chargeforecast.forecast.ForecastAccuracy
+import com.example.chargeforecast.session.SessionCache
+import com.example.chargeforecast.session.SessionEngine
+import com.example.chargeforecast.session.SessionSummary
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -82,156 +87,170 @@ class ChargeForecastTest {
     fun forecast_collecting_whileNoSpeed() {
         val f = ChargeForecaster.forecast(
             levelPct = 50,
-            measuredSpeedPctPerMin = null,
-            instantSpeedPctPerMin = null,
+            speedPctPerMin = null,
             sessionAgeMs = 5 * min,
             isFull = false,
             isCharging = true
         )
         assertEquals(ForecastAccuracy.COLLECTING, f.accuracy)
-        assertNull(f.remainingMin)
+        assertNull(f.remainingSec)
         assertNull(f.speedPctPerMin)
     }
 
     @Test
-    fun forecast_earlyAgeWithSpeed_showsApproximate() {
-        // Было: жёсткие 3 минуты молчания. Стало: есть скорость — есть цифры.
+    fun forecast_firstSeconds_showRoughForecast() {
+        // Цифры с первой валидной опоры (обычно 1-3 сек): грубое
+        // округление сглаживает раннюю неточность.
         val f = ChargeForecaster.forecast(
-            levelPct = 54,
-            measuredSpeedPctPerMin = 2f,
-            instantSpeedPctPerMin = null,
-            sessionAgeMs = 2 * min,
+            levelPct = 50,
+            speedPctPerMin = 2f,
+            sessionAgeMs = 5_000L,
             isFull = false,
             isCharging = true
         )
         assertEquals(ForecastAccuracy.APPROXIMATE, f.accuracy)
-        assertEquals(23L, f.remainingMin)
+        assertEquals(2797L, f.remainingSec)
+        assertEquals(2f, f.speedPctPerMin!!, 1e-6f)
+    }
+
+    @Test
+    fun forecast_afterMeasuringTier_showsApproximate() {
+        val f = ChargeForecaster.forecast(
+            levelPct = 50,
+            speedPctPerMin = 2f,
+            sessionAgeMs = 25_000L,
+            isFull = false,
+            isCharging = true
+        )
+        assertEquals(ForecastAccuracy.APPROXIMATE, f.accuracy)
+        // Интеграл: 25%/2 линейных + будущие корзины 80-100 = 46.6 мин.
+        assertEquals(2797L, f.remainingSec)
     }
 
     @Test
     fun forecast_linearSection_extrapolates() {
         val f = ChargeForecaster.forecast(
             levelPct = 50,
-            measuredSpeedPctPerMin = 2f,
-            instantSpeedPctPerMin = null,
+            speedPctPerMin = 2f,
             sessionAgeMs = 5 * min,
             isFull = false,
             isCharging = true
         )
         assertEquals(ForecastAccuracy.APPROXIMATE, f.accuracy)
-        assertEquals(25L, f.remainingMin)
+        // Интеграл: линейные 25%/2 + будущие корзины 80-100 = 46.6 мин —
+        // прогноз честно учитывает замедление впереди.
+        assertEquals(2797L, f.remainingSec)
     }
 
     @Test
     fun forecast_taperSection_slowsDown() {
+        // На доводке измеренная скорость замедлена физикой (счётчик/ток):
+        // 0.5 %/мин на 90% = линейная опора 1.667 × корзина 0.3.
+        // Интеграл по корзинам: 5/0.5 + 5/0.333 = 25 мин = 1500 с.
         val f = ChargeForecaster.forecast(
             levelPct = 90,
-            measuredSpeedPctPerMin = 1f,
-            instantSpeedPctPerMin = null,
+            speedPctPerMin = 0.5f,
             sessionAgeMs = 12 * min,
             isFull = false,
-            isCharging = true
+            isCharging = true,
+            estimatesAgreed = true
         )
         assertEquals(ForecastAccuracy.PRECISE, f.accuracy)
-        // Линейно было бы 10 мин, с доводкой — вдвое больше, не меньше.
-        assertEquals(20L, f.remainingMin)
+        assertEquals(1500L, f.remainingSec)
     }
 
     @Test
-    fun forecast_instantOnly_showsApproximateImmediately() {
-        // Первые секунды: измеренной скорости нет, но ток со счётчиком есть.
+    fun forecast_matureWithoutAgreement_staysApproximate() {
+        // «Точно» только при согласии спидометров: старше 10 минут,
+        // но спидометры разъехались — остаёмся «примерно».
         val f = ChargeForecaster.forecast(
             levelPct = 50,
-            measuredSpeedPctPerMin = null,
-            instantSpeedPctPerMin = 0.833f,
-            sessionAgeMs = 5_000L,
+            speedPctPerMin = 1f,
+            sessionAgeMs = 12 * min,
             isFull = false,
-            isCharging = true
+            isCharging = true,
+            estimatesAgreed = false
         )
         assertEquals(ForecastAccuracy.APPROXIMATE, f.accuracy)
-        assertEquals(60L, f.remainingMin)
     }
 
     @Test
-    fun forecast_blend_shiftsWeightWithAge() {
-        // Возраст 0: только instant (2.0) → 25 мин.
-        val fresh = ChargeForecaster.forecast(
+    fun forecast_divergence_refining() {
+        // Расхождение S1/S2 больше 40% — «уточняю» до схождения.
+        val f = ChargeForecaster.forecast(
             levelPct = 50,
-            measuredSpeedPctPerMin = 1f,
-            instantSpeedPctPerMin = 2f,
-            sessionAgeMs = 0L,
-            isFull = false,
-            isCharging = true
-        )
-        assertEquals(25L, fresh.remainingMin)
-        assertEquals(ForecastAccuracy.APPROXIMATE, fresh.accuracy)
-
-        // 5 минут: пополам (1.5) → 33 мин.
-        val mid = ChargeForecaster.forecast(
-            levelPct = 50,
-            measuredSpeedPctPerMin = 1f,
-            instantSpeedPctPerMin = 2f,
+            speedPctPerMin = 1f,
             sessionAgeMs = 5 * min,
             isFull = false,
-            isCharging = true
+            isCharging = true,
+            refining = true
         )
-        assertEquals(33L, mid.remainingMin)
+        assertEquals(ForecastAccuracy.REFINING, f.accuracy)
+        // Интеграл: 30 линейных + 63.3 корзин = 93.3 мин = 5595 с.
+        assertEquals(5595L, f.remainingSec)
+    }
 
-        // 10+ минут: только замер (1.0) → 50 мин и «точно».
-        val mature = ChargeForecaster.forecast(
-            levelPct = 50,
-            measuredSpeedPctPerMin = 1f,
-            instantSpeedPctPerMin = 2f,
+    @Test
+    fun forecast_counterRemaining_ignoresLevelStall() {
+        // Счётчик — непрерывный остаток: уровень стоит на 48% (шаг 1%),
+        // счётчик говорит 50% до полного — цифры идут, не ждут уровня.
+        // Счётчик-путь: 32 линейных + 18% по корзинам (9.1+12.5+16.7+15)
+        // = 85.3 мин = 5115 с; уровень-путь (52%) дал бы 95.3 — пути различимы.
+        val f = ChargeForecaster.forecast(
+            levelPct = 48,
+            speedPctPerMin = 1f,
+            sessionAgeMs = 5 * min,
+            isFull = false,
+            isCharging = true,
+            remainingEnergyUah = 2_000_000L,
+            capacityUah = 4_000_000L
+        )
+        assertEquals(5115L, f.remainingSec)
+    }
+
+    @Test
+    fun forecast_taperInterpolation_smoothAcrossEighty() {
+        // Реальное поведение: измеренная скорость падает по корзинам
+        // (та же кривая, что в интеграле) — остаток меняется плавно
+        // через 80%, без ступеньки ×2.
+        val levels = listOf(78, 79, 80, 81, 83, 85, 88, 90, 95)
+        var prev: Long? = null
+        levels.forEach { level ->
+            val measuredSpeed = when {
+                level < 80 -> 1f
+                level < 85 -> 0.55f
+                level < 90 -> 0.40f
+                level < 95 -> 0.30f
+                else -> 0.20f
+            }
+            val f = ChargeForecaster.forecast(
+                levelPct = level,
+                speedPctPerMin = measuredSpeed,
+                sessionAgeMs = 12 * min,
+                isFull = false,
+                isCharging = true,
+                estimatesAgreed = true
+            )
+            val remaining = f.remainingSec!!
+            if (prev != null) {
+                assertTrue(
+                    "скачок остатка $prev → $remaining на уровне $level",
+                    remaining <= prev!! + 60L
+                )
+            }
+            prev = remaining
+        }
+        // На 80% скорость ещё линейная опора 1.0, измеренная — 0.55
+        // (первая корзина): интеграл = 63.26 мин = 3795 с.
+        val at80 = ChargeForecaster.forecast(
+            levelPct = 80,
+            speedPctPerMin = 0.55f,
             sessionAgeMs = 12 * min,
             isFull = false,
-            isCharging = true
+            isCharging = true,
+            estimatesAgreed = true
         )
-        assertEquals(50L, mature.remainingMin)
-        assertEquals(ForecastAccuracy.PRECISE, mature.accuracy)
-    }
-
-    @Test
-    fun forecast_convergence_preciseEarly() {
-        // Оценки сошлись (±10%) на 4-й минуте — объективно точно.
-        val f = ChargeForecaster.forecast(
-            levelPct = 50,
-            measuredSpeedPctPerMin = 1f,
-            instantSpeedPctPerMin = 1.1f,
-            sessionAgeMs = 4 * min,
-            isFull = false,
-            isCharging = true
-        )
-        assertEquals(ForecastAccuracy.PRECISE, f.accuracy)
-        // Бленд на 4-й минуте: 1.1·0.6 + 1.0·0.4 = 1.06 → 50/1.06 = 47.
-        assertEquals(47L, f.remainingMin)
-    }
-
-    @Test
-    fun forecast_divergence_staysApproximate() {
-        // Разъехались вдвое — рано говорить «точно».
-        val f = ChargeForecaster.forecast(
-            levelPct = 50,
-            measuredSpeedPctPerMin = 1f,
-            instantSpeedPctPerMin = 2f,
-            sessionAgeMs = 4 * min,
-            isFull = false,
-            isCharging = true
-        )
-        assertEquals(ForecastAccuracy.APPROXIMATE, f.accuracy)
-    }
-
-    @Test
-    fun forecast_convergence_tooYoung_staysApproximate() {
-        // Сошлись, но сессии меньше 3 минут — ещё рано.
-        val f = ChargeForecaster.forecast(
-            levelPct = 50,
-            measuredSpeedPctPerMin = 1f,
-            instantSpeedPctPerMin = 1.05f,
-            sessionAgeMs = 60_000L,
-            isFull = false,
-            isCharging = true
-        )
-        assertEquals(ForecastAccuracy.APPROXIMATE, f.accuracy)
+        assertEquals(3795L, at80.remainingSec)
     }
 
     @Test
@@ -239,54 +258,132 @@ class ChargeForecastTest {
         // 0.01 %/мин на 60% — мусор рампы («1000 часов»), цифр нет.
         val f = ChargeForecaster.forecast(
             levelPct = 60,
-            measuredSpeedPctPerMin = 0.01f,
-            instantSpeedPctPerMin = 0.01f,
+            speedPctPerMin = 0.01f,
             sessionAgeMs = 12 * min,
             isFull = false,
             isCharging = true
         )
         assertEquals(ForecastAccuracy.COLLECTING, f.accuracy)
-        assertNull(f.remainingMin)
+        assertNull(f.remainingSec)
     }
 
     @Test
     fun forecast_slowTrickle_shownNearFull() {
-        // Та же скорость на 90% — настоящая доводка, показываем.
+        // Та же скорость на 90% — настоящая доводка, показываем:
+        // базовая опора 0.033, корзины 90-95 и 95-100 → 500 + 750 = 1250 мин.
         val f = ChargeForecaster.forecast(
             levelPct = 90,
-            measuredSpeedPctPerMin = 0.01f,
-            instantSpeedPctPerMin = null,
+            speedPctPerMin = 0.01f,
             sessionAgeMs = 12 * min,
             isFull = false,
             isCharging = true
         )
-        assertEquals(2000L, f.remainingMin)
+        assertEquals(75000L, f.remainingSec)
     }
 
     @Test
     fun forecast_full_showsCharged() {
         val f = ChargeForecaster.forecast(
             levelPct = 100,
-            measuredSpeedPctPerMin = null,
-            instantSpeedPctPerMin = null,
+            speedPctPerMin = null,
             sessionAgeMs = 30 * min,
             isFull = true,
             isCharging = false
         )
         assertTrue(f.isFull)
-        assertEquals(0L, f.remainingMin)
+        assertEquals(0L, f.remainingSec)
     }
 
     @Test
     fun forecast_notCharging_noRemaining() {
         val f = ChargeForecaster.forecast(
             levelPct = 50,
-            measuredSpeedPctPerMin = 1f,
-            instantSpeedPctPerMin = null,
+            speedPctPerMin = 1f,
             sessionAgeMs = 15 * min,
             isFull = false,
             isCharging = false
         )
-        assertNull(f.remainingMin)
+        assertNull(f.remainingSec)
+    }
+
+    // ---------- Регрессия «25 мин → 1 ч 25 мин» через движок ----------
+
+    private fun snapshot(
+        tMs: Long,
+        level: Int,
+        currentMa: Float?,
+        counterUah: Long?,
+        charging: Boolean = true,
+        plugged: Boolean = true,
+        full: Boolean = false
+    ) = BatterySnapshot(
+        levelPct = level,
+        isPlugged = plugged,
+        isCharging = charging,
+        isFull = full,
+        chargeType = ChargeType.AC,
+        temperatureC = null,
+        voltageV = null,
+        currentMa = currentMa,
+        chargeCounterUah = counterUah,
+        timestampMs = tMs
+    )
+
+    @Test
+    fun regression_rampCurrentAndPrior_displayedNeverExplodes() {
+        // Синтетика симптома «25 мин → 1 ч 25 мин»: приор прошлой сессии
+        // 2.0 %/мин, ток с рампой 0.2→2.4 А, базовая скорость ровная
+        // 1 %/мин. Физика согласованная: в доводке (80%+) ток и уровень
+        // замедляются тем же множителем, что применяет прогноз.
+        val capacity = 4_000_000L
+        val cache = SessionCache(FakeSharedPreferences())
+        cache.saveSummary(
+            SessionSummary(0L, 0L, 0, avgCcSpeedPctPerMin = 2.0f, peakCurrentMa = null, chargeType = ChargeType.AC)
+        )
+        val engine = SessionEngine(cache) { capacity }
+        val stepMs = 1_000L
+        var remPct = 60.0 // остаток до 100%, процентов
+        var prev: Long? = null
+        var t = 0L
+        while (t <= 50 * 60_000L && remPct > 1.0) {
+            val level = (100.0 - remPct).toInt().coerceIn(0, 99)
+            // Физика доводки — та же корзинная кривая, что в TaperCurve.
+            val taper = when {
+                level < 80 -> 1f
+                level < 85 -> 0.55f
+                level < 90 -> 0.40f
+                level < 95 -> 0.30f
+                else -> 0.20f
+            }
+            val counterUah = (capacity * (100.0 - remPct) / 100.0).toLong()
+            val currentMa = if (t < 60_000L) {
+                (200_000L + t * 2_200_000L / 60_000L) / 1000f
+            } else {
+                2_400f * taper
+            }
+            val state = engine.update(
+                snapshot(
+                    t, level, currentMa, counterUah,
+                    charging = t >= 30_000L // рампа: CHARGING запаздывает
+                ),
+                t
+            )
+            // Секунда ноль от кабеля: рампа не сдвигает возраст сессии.
+            assertEquals(t, state.sessionAgeMs)
+            val displayed = state.forecast.remainingSec
+            val previous = prev
+            if (displayed != null && previous != null && t > 90_000L) {
+                // Спека приёмки: пересмотры вверх допустимы, но ≤25%
+                // (границы корзин дают переходные выбросы нормализации).
+                assertTrue(
+                    "скачок показанного остатка $previous → $displayed на ${t / 1000} сек",
+                    displayed <= previous * 1.25f + 60f
+                )
+            }
+            if (displayed != null) prev = displayed
+            // Физика: остаток тает со скоростью 1 %/мин · множитель доводки.
+            remPct -= taper * stepMs / 60_000.0
+            t += stepMs
+        }
     }
 }

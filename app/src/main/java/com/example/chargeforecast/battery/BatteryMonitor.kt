@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.BatteryManager
+import android.os.SystemClock
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -15,12 +16,15 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
-// Живой источник состояния батареи. Обновления только по системным
-// broadcast (ACTION_BATTERY_CHANGED) — без опроса в цикле.
+// Живой источник состояния батареи. Обновления по системным
+// broadcast (ACTION_BATTERY_CHANGED) плюс тик опроса: на зарядке —
+// раз в секунду (ток и счётчик живут ~1 Гц, телефон у розетки),
+// на разряде — раз в 10 секунд (экономим батарею). Все метки —
+// elapsedRealtime: подстройка системных часов не скачет расчёты.
 class BatteryMonitor(
     private val appContext: Context,
     private val scope: CoroutineScope,
-    private val clock: () -> Long = System::currentTimeMillis
+    private val clock: () -> Long = SystemClock::elapsedRealtime
 ) {
     private val _snapshots = MutableStateFlow<BatterySnapshot?>(null)
     val snapshots: StateFlow<BatterySnapshot?> = _snapshots.asStateFlow()
@@ -51,13 +55,12 @@ class BatteryMonitor(
         } else {
             readSnapshotNow()?.let { _snapshots.value = it }
         }
-        // Тик с замерами раз в 10 секунд: broadcast приходит только
-        // при изменении батареи, а ток/температура плывут непрерывно.
-        // Чаще (раз в секунду) смысла нет: уровень идёт шагом 1%,
-        // новых данных для прогноза это не даст, только расход батареи.
+        // Тик с замерами: broadcast приходит только при изменении
+        // батареи, а ток/счётчик плывут непрерывно (~1 Гц). На зарядке
+        // экономить нечего — опрос раз в секунду; на разряде — 10 сек.
         pollJob = scope.launch {
             while (isActive && started) {
-                delay(POLL_MS)
+                delay(pollDelayMs(_snapshots.value?.isPlugged == true))
                 try {
                     val fresh = readSnapshotNow()
                     val prev = _snapshots.value
@@ -99,10 +102,11 @@ class BatteryMonitor(
             Long.MIN_VALUE.toInt()
         }
         // getIntProperty отдаёт int; Long.MIN_VALUE как int невозможен,
-        // поэтому ошибка драйвера видна как Int.MIN_VALUE.
+        // поэтому ошибка драйвера видна как Int.MIN_VALUE. Часть драйверов
+        // (Huawei) свойство не отдаёт вовсе — fallback в sysfs.
         val currentUa: Long? = sanitizeCurrentUa(
             if (currentRaw == Int.MIN_VALUE) Long.MIN_VALUE else currentRaw.toLong()
-        )
+        ) ?: SysfsCurrent.readCurrentNowUa()
         // Счётчик остатка для оценки ёмкости с первого замера.
         // Long.MIN_VALUE — ошибка драйвера, отсекается в toSnapshot.
         val counterUah: Long? = try {
@@ -131,6 +135,11 @@ class BatteryMonitor(
 
     companion object {
         const val POLL_MS = 10_000L
+        const val POLL_ACTIVE_MS = 1_000L
+
+        // Чистая функция для unit-теста интервалов по состоянию.
+        fun pollDelayMs(plugged: Boolean): Long =
+            if (plugged) POLL_ACTIVE_MS else POLL_MS
     }
 }
 
