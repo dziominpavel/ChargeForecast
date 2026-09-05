@@ -74,10 +74,9 @@ class ChargeSpeedCalculator(
     }
 
     companion object {
-        // Окно и калибровки spike-замера — см. задачу 2.3 в tasks.md.
+        // Окно уровневого спидометра S3 (fallback) и калибровки spike-замера.
         const val SPEED_WINDOW_MS = 10 * 60_000L
         // Физический минимум: второй тик с новым уровнем (10 сек).
-        // Ранний шум не страшен: вес замера растёт с возрастом сессии.
         const val MIN_SPAN_MS = 10_000L
         const val OUTLIER_FACTOR = 3f
     }

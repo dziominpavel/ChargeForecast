@@ -5,9 +5,9 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BatteryChargingFull
-import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
@@ -16,22 +16,21 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextAlign
 import com.example.chargeforecast.R
+import com.example.chargeforecast.battery.BatterySnapshot
 import com.example.chargeforecast.battery.ChargeType
 import com.example.chargeforecast.forecast.ForecastAccuracy
-import com.example.chargeforecast.notification.NotificationHelper
 import com.example.chargeforecast.session.SessionState
 import com.example.chargeforecast.ui.theme.ChargeDimens
 
-// Живой экран сессии: те же цифры, что в шторке.
-private const val NOTIF_STALE_MS = 90_000L
+// Живой экран сессии — единственная поверхность продукта.
 
 @Composable
 fun SessionScreen(
     state: SessionState,
-    notificationsDenied: Boolean,
-    onRetryNotifications: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Column(
@@ -55,13 +54,13 @@ fun SessionScreen(
                 text = stringResource(R.string.session_not_charging_title),
                 style = MaterialTheme.typography.headlineLarge,
                 color = MaterialTheme.colorScheme.onBackground,
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                textAlign = TextAlign.Center
             )
             Text(
                 text = stringResource(R.string.session_not_charging_desc),
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                textAlign = TextAlign.Center
             )
             return
         }
@@ -83,16 +82,12 @@ fun SessionScreen(
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         ElectricalLine(snapshot = snapshot)
-        LastSpeedLine(state = state)
-        NotifStaleLine(state = state)
 
         Card(
             colors = CardDefaults.cardColors(
                 containerColor = MaterialTheme.colorScheme.surfaceVariant
             ),
-            shape = androidx.compose.foundation.shape.RoundedCornerShape(
-                ChargeDimens.CardCorner
-            )
+            shape = RoundedCornerShape(ChargeDimens.CardCorner)
         ) {
             Column(
                 modifier = Modifier.padding(ChargeDimens.CardPadding),
@@ -105,13 +100,13 @@ fun SessionScreen(
                         style = MaterialTheme.typography.headlineLarge,
                         color = MaterialTheme.colorScheme.primary
                     )
-                    state.forecast.remainingMin == null -> Text(
-                        text = stringResource(R.string.session_collecting),
+                    state.forecast.remainingSec == null -> Text(
+                        text = measuringOrCollecting(state),
                         style = MaterialTheme.typography.bodyLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     else -> {
-                        val context = androidx.compose.ui.platform.LocalContext.current
+                        val context = LocalContext.current
                         val speed = state.forecast.speedPctPerMin
                         if (speed != null) {
                             Text(
@@ -126,8 +121,8 @@ fun SessionScreen(
                         Text(
                             text = stringResource(
                                 R.string.session_remaining,
-                                NotificationHelper.formatRemaining(
-                                    context, state.forecast.remainingMin
+                                ForecastText.formatRemaining(
+                                    context, state.forecast.remainingSec
                                 )
                             ),
                             style = MaterialTheme.typography.headlineLarge,
@@ -142,22 +137,11 @@ fun SessionScreen(
                 }
             }
         }
-
-        if (notificationsDenied) {
-            Text(
-                text = stringResource(R.string.session_notifications_denied),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Button(onClick = onRetryNotifications) {
-                Text(stringResource(R.string.session_retry_notifications))
-            }
-        }
     }
 }
 
 @Composable
-private fun ElectricalLine(snapshot: com.example.chargeforecast.battery.BatterySnapshot) {
+private fun ElectricalLine(snapshot: BatterySnapshot) {
     // Живые сырые данные — видны сразу, не ждут прогноза.
     // Если датчик тока недоступен, строка просто короче (fallback).
     val parts = mutableListOf<String>()
@@ -192,36 +176,12 @@ private fun ElectricalLine(snapshot: com.example.chargeforecast.battery.BatteryS
 }
 
 @Composable
-private fun LastSpeedLine(state: SessionState) {
-    // Справочно из кэша, пока текущая скорость уточняется.
-    // На точном замере строка не нужна — цифры уже свои.
-    if (state.forecast.accuracy == ForecastAccuracy.PRECISE) return
-    val last = state.lastSpeedPctPerMin ?: return
-    Text(
-        text = stringResource(
-            R.string.session_last_speed,
-            String.format(java.util.Locale.US, "%.1f", last)
-        ),
-        style = MaterialTheme.typography.bodyMedium,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        textAlign = androidx.compose.ui.text.style.TextAlign.Center
-    )
-}
-
-@Composable
-private fun NotifStaleLine(state: SessionState) {
-    // Диагностика шторки: сервис пишет пульс при каждом обновлении.
-    // Пульса нет >90 сек — шторка мертва, говорим прямо и что делать.
-    val heartbeat = state.lastNotifUpdateMs
-    val stale = heartbeat == null ||
-        System.currentTimeMillis() - heartbeat > NOTIF_STALE_MS
-    if (!stale) return
-    Text(
-        text = stringResource(R.string.session_notif_stale),
-        style = MaterialTheme.typography.bodyMedium,
-        color = MaterialTheme.colorScheme.error,
-        textAlign = androidx.compose.ui.text.style.TextAlign.Center
-    )
+private fun measuringOrCollecting(state: SessionState): String {
+    // Ярус «Измеряю…»: живой счётчик секунд (тик 1 сек) вместо статичного
+    // текста — видно, что система жива с первой секунды.
+    val secs = ForecastText.measuringAgeSeconds(state.sessionAgeMs)
+    return if (secs != null) stringResource(R.string.session_measuring, secs)
+    else stringResource(R.string.session_collecting)
 }
 
 @Composable
@@ -239,6 +199,7 @@ private fun accuracyText(accuracy: ForecastAccuracy): String = stringResource(
     when (accuracy) {
         ForecastAccuracy.APPROXIMATE -> R.string.session_accuracy_approx
         ForecastAccuracy.PRECISE -> R.string.session_accuracy_precise
+        ForecastAccuracy.REFINING -> R.string.session_accuracy_refining
         ForecastAccuracy.COLLECTING -> R.string.session_collecting
     }
 )

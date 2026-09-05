@@ -9,7 +9,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 
-// Ручной DI: один монитор сессии на процесс для сервиса и экрана.
+// Ручной DI: один монитор сессии на процесс для экрана.
 class ChargeForecastApplication : Application() {
 
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -40,6 +40,6 @@ class ChargeForecastApplication : Application() {
     }
 }
 
-// Доступ к монитору из Activity/Service без DI-фреймворка.
+// Доступ к монитору из Activity без DI-фреймворка.
 fun Application.sessionMonitor(): ChargeSessionMonitor =
     (this as ChargeForecastApplication).sessionMonitor
