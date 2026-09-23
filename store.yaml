@@ -1,0 +1,4 @@
+name: ChargeForecast
+description: "Android-приложение для отслеживания зарядки: прогноз времени до 100% (ч/мин/с, обновление каждую секунду), текущая скорость зарядки и статус точности."
+icon: assets/icon.png
+requirements: "Android 10+"
