@@ -13,6 +13,19 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
+// Подпись релиза для витрины (store): путь и пароли — только в local.properties (вне git).
+// Кейстора нет (CI/свежая машина) — release подписывается debug-ключом: сборка всё равно
+// остаётся установляемой (пустой signingConfig дал бы unsigned APK, который Android не ставит).
+val signingProps = Properties().apply {
+    val f = rootProject.file("local.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
+}
+val releaseStoreProp = signingProps.getProperty("RELEASE_STORE_FILE")?.takeIf { it.isNotBlank() }
+val hasReleaseKeystore = releaseStoreProp != null && rootProject.file(releaseStoreProp).exists()
+if (releaseStoreProp != null && !hasReleaseKeystore) {
+    logger.warn("RELEASE_STORE_FILE=$releaseStoreProp, но файла нет — release подписывается debug-ключом!")
+}
+
 android {
     namespace = "com.example.chargeforecast"
     compileSdk {
@@ -61,6 +74,17 @@ android {
         logger.lifecycle("[ChargeForecast] versionName=$versionName, versionCode=$versionCode, buildDate=$buildDate")
     }
 
+    if (hasReleaseKeystore) {
+        signingConfigs {
+            create("release") {
+                storeFile = rootProject.file(releaseStoreProp!!)
+                storePassword = signingProps.getProperty("RELEASE_STORE_PASSWORD")
+                keyAlias = signingProps.getProperty("RELEASE_KEY_ALIAS") ?: "androiddebugkey"
+                keyPassword = signingProps.getProperty("RELEASE_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
@@ -68,6 +92,11 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            signingConfig = if (hasReleaseKeystore) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
     }
     compileOptions {
