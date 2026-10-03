@@ -2,12 +2,6 @@ import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import java.util.Properties
 
-val shouldBumpPatch = gradle.startParameter.taskNames.any { taskName ->
-    taskName.contains("assemble", ignoreCase = true) ||
-        taskName.contains("install", ignoreCase = true) ||
-        taskName.contains("bundle", ignoreCase = true)
-}
-
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
@@ -37,32 +31,39 @@ android {
         minSdk = 29
         targetSdk = 36
 
-        val versionPropsFile = rootProject.file("version.properties")
-        if (!versionPropsFile.exists()) {
-            val defaults = Properties().apply {
-                setProperty("VERSION_MAJOR", "0")
-                setProperty("VERSION_MINOR", "1")
-                setProperty("VERSION_PATCH", "0")
-            }
-            versionPropsFile.parentFile?.mkdirs()
-            versionPropsFile.outputStream().use { defaults.store(it, null) }
+        // Версия отделена от сборки (docs/versioning.md, запрет автобампа):
+        // versionName — строго из файла `version`, его меняет только release-скрипт.
+        val versionFile = rootProject.file("version")
+        require(versionFile.exists()) {
+            "нет файла version в корне проекта — версия берётся только из него"
         }
-        val versionProps = Properties().apply {
-            versionPropsFile.inputStream().use { load(it) }
+        val versionNameFromFile = versionFile.readText(Charsets.UTF_8).trim()
+        require(versionNameFromFile.matches(Regex("""^\d+\.\d+\.\d+$"""))) {
+            "файл version вне формата MAJOR.MINOR.PATCH: '$versionNameFromFile'"
         }
+        versionName = versionNameFromFile
 
-        val major = versionProps.getProperty("VERSION_MAJOR", "0").toInt()
-        val minor = versionProps.getProperty("VERSION_MINOR", "1").toInt()
-        var patch = versionProps.getProperty("VERSION_PATCH", "0").toInt()
-
-        if (shouldBumpPatch) {
-            patch += 1
-            versionProps.setProperty("VERSION_PATCH", patch.toString())
-            versionPropsFile.outputStream().use { versionProps.store(it, null) }
+        // versionCode = база + число коммитов: растёт на каждый коммит, поэтому
+        // свежая сборка всегда ставится поверх старой. База общая для четырёх
+        // Android-проектов и выше прежних значений (таблица — design.md change'а
+        // add-release-only-versioning):
+        //   GymProgress   2 000 010 634    ChargeForecast 2 000 000 131
+        //   VoiceMind     2 000 000 232    Wishlot        2 000 000 128
+        // При недоступном git берётся сама база — она всё равно выше всех прежних.
+        val commitCount = runCatching {
+            // providers.exec — штатный способ читать git на конфигурации:
+            // в отличие от ProcessBuilder он разрешён configuration cache,
+            // и его результат входит в отпечаток кэша, поэтому при новом
+            // коммите версионный код пересчитается, а не останется устаревшим.
+            providers.exec {
+                commandLine("git", "rev-list", "--count", "HEAD")
+                workingDir(rootDir)
+            }.standardOutput.asText.map { it.trim().toInt() }.get()
+        }.getOrElse {
+            logger.warn("[ChargeForecast] git rev-list --count HEAD не выполнен (${it.message}) — versionCode = база")
+            0
         }
-
-        versionCode = 2_000_000_000 + (major * 10000) + (minor * 100) + patch
-        versionName = "$major.$minor.$patch"
+        versionCode = 2_000_100_000 + commitCount
 
         buildConfigField("int", "VERSION_CODE", versionCode.toString())
 

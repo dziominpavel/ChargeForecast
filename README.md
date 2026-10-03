@@ -41,7 +41,7 @@ Android-приложение для отслеживания зарядки те
 .\gradlew.bat installDebug
 ```
 
-> Версия (`version.properties`) автоматически увеличивает patch при `assemble`/`install`/`bundle`.
+> Версия — файл `version`: меняется только release-скриптом, при `assemble`/`install`/`bundle` не увеличивается.
 
 ## Структура
 
@@ -61,7 +61,7 @@ app/
       mipmap-anydpi-v26/       # adaptive-icon
   build.gradle.kts
 gradle/libs.versions.toml      # каталог версий зависимостей
-version.properties             # версия приложения
+version                        # версия приложения (только release-скрипт)
 AGENTS.md                      # правила для AI-агентов
 ```
 
