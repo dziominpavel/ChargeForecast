@@ -40,7 +40,10 @@ object ChargeForecaster {
         speedPctPerMin: Float?,
         sessionAgeMs: Long,
         isFull: Boolean,
-        isCharging: Boolean,
+        // Семантика «сессия активна» (design D7): сессия уже идёт (её
+        // старт — переход isPlugged), поэтому определяет выдачу цифр
+        // только наличие опоры, а не запоздавший статус CHARGING.
+        sessionActive: Boolean,
         // Расхождение S1/S2 больше 40% — «уточняю» до схождения.
         refining: Boolean = false,
         // Два независимых спидометра сошлись в ±20% — условие «точно».
@@ -62,9 +65,10 @@ object ChargeForecaster {
                 isFull = true
             )
         }
-        // Ни скорости, ни зарядки — ждём. Порог доверия: скорость ниже
-        // мусорной рампы вне доводки — цифры прячем («1000 часов»).
-        if (!isCharging || speedPctPerMin == null || speedPctPerMin <= 0f ||
+        // Ни опоры (скорость null/мусорная) — ждём. Порог доверия:
+        // скорость ниже мусорной рампы вне доводки — цифры прячем
+        // («1000 часов»). Статус зарядки на это не влияет (D7).
+        if (!sessionActive || speedPctPerMin == null || speedPctPerMin <= 0f ||
             (levelPct < TaperCurve.TAPER_START_LEVEL &&
                 speedPctPerMin < InstantSpeedEstimator.MIN_CREDIBLE_SPEED_PCT_PER_MIN)
         ) {

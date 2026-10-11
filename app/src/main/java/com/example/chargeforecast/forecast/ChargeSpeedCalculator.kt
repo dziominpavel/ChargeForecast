@@ -13,11 +13,11 @@ class ChargeSpeedCalculator(
     private val samples = ArrayDeque<LevelSample>()
 
     fun addSample(timeMs: Long, levelPct: Int) {
-        val last = samples.lastOrNull()
-        // Дубли уровня подряд не несут информации — храним только свежий.
-        if (last != null && last.levelPct == levelPct) {
-            samples.removeLast()
-        }
+        // Дубли уровня подряд не несут информации — храним ПЕРВЫЙ тик
+        // уровня: время его появления. Хранение свежего сжимало весь
+        // шаг 1% до секунды перехода — S3 давал выброс ~60 %/мин на
+        // каждой границе минуты.
+        if (samples.lastOrNull()?.levelPct == levelPct) return
         samples.addLast(LevelSample(timeMs, levelPct))
         evictOlderThan(timeMs)
     }

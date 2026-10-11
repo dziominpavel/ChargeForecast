@@ -25,6 +25,11 @@ data class BatterySnapshot(
     val voltageV: Float?,
     // Положительный — зарядка (мА), null — датчик недоступен.
     val currentMa: Float?,
+    // Положительный модуль тока разряда (мкА), null — датчик недоступен
+    // или устройство заряжается. Отдельно от currentMa: тот строго про
+    // зарядку, менять его знаковую семантику — всплеск риска по расчёту
+    // скорости, пику тока и строке электрики (design D8).
+    val dischargeCurrentUa: Long? = null,
     // Остаток заряда (мкА·ч), null — счётчик недоступен.
     // Вместе с уровнем даёт оценку полной ёмкости с первого замера.
     val chargeCounterUah: Long?,
@@ -82,6 +87,11 @@ fun BatteryExtras.toSnapshot(nowMs: Long): BatterySnapshot {
         currentMa = currentNowUa
             ?.takeIf { it > 0 && (charging || full) }
             ?.let { it / 1000f },
+        // Ток разряда — модуль отрицательного значения, только вне зарядки.
+        // currentNowUa уже знаковый (sanitizeCurrentUa сохраняет минус).
+        dischargeCurrentUa = currentNowUa
+            ?.takeIf { !charging && !full && it < 0L }
+            ?.let { -it },
         chargeCounterUah = chargeCounterUah?.takeIf { it > 0 },
         timestampMs = nowMs
     )

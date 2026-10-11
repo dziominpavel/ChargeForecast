@@ -96,26 +96,17 @@ class InstantSpeedTest {
     }
 
     @Test
-    fun selectInstant_rampGarbage_shadowsCacheNoMore() {
-        val prior = 2.0f
-        // Мусор рампы не затеняет приор — regression на «вечное collecting».
+    fun rampGarbage_contractMovedToHistoryBlender() {
+        // Регресс «мусор рампы не затеняет приор» больше живёт не здесь:
+        // selectInstantSpeed удалён (приор убран из fusion). Эквивалентные
+        // проверки — HistoryBlenderTest (blend_noLive_carriesHistory,
+        // blend_liveBelowCredibility_carriesHistory) и SpeedFusionTest
+        // (tierMeasuring_pureS2WithCredibility). Порог credible тот же.
         assertEquals(
-            2.0f,
-            InstantSpeedEstimator.selectInstantSpeed(0.001f, prior)!!
+            InstantSpeedEstimator.MIN_CREDIBLE_SPEED_PCT_PER_MIN,
+            0.05f,
+            1e-6f
         )
-        // Доверенный живой выше приора — берём его.
-        assertEquals(
-            2.5f,
-            InstantSpeedEstimator.selectInstantSpeed(2.5f, prior)!!
-        )
-        // Доверенный живой ниже приора — на разгоне верим приору.
-        assertEquals(
-            2.0f,
-            InstantSpeedEstimator.selectInstantSpeed(1.5f, prior)!!
-        )
-        assertEquals(2.0f, InstantSpeedEstimator.selectInstantSpeed(null, prior)!!)
-        assertNull(InstantSpeedEstimator.selectInstantSpeed(null, null))
-        assertNull(InstantSpeedEstimator.selectInstantSpeed(0.01f, null))
     }
 
     @Test

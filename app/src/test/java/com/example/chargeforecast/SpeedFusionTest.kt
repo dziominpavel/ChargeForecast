@@ -19,17 +19,18 @@ class SpeedFusionTest {
     ) = SpeedFusion.Estimates(s1Short, s1Long, s2, s3)
 
     @Test
-    fun tierMeasuring_usesCurrentWithPrior() {
-        // 0-20 сек: только S2; приор затеняет мусор рампы.
-        val fused = SpeedFusion.fuse(estimates(s2 = 0.05f), 10_000L, priorPctPerMin = 2.0f)
-        assertEquals(2.0f, fused.speedPctPerMin!!, 1e-6f)
+    fun tierMeasuring_pureS2WithCredibility() {
+        // 0-20 сек: только S2 с credible-фильтром. Приор прошлой сессии
+        // убран из fusion — мусор рампы это отсутствие данных (null),
+        // историю подхватывает HistoryBlender (см. HistoryBlenderTest).
+        val fused = SpeedFusion.fuse(estimates(s2 = 1.4f), 10_000L)
+        assertEquals(1.4f, fused.speedPctPerMin!!, 1e-6f)
         assertFalse(fused.refining)
-        // Мусор рампы ниже порога — приор остаётся единственной опорой.
-        val shaded = SpeedFusion.fuse(estimates(s2 = 0.01f), 10_000L, priorPctPerMin = 2.0f)
-        assertEquals(2.0f, shaded.speedPctPerMin!!, 1e-6f)
-        // Приора нет, мусор ниже порога — цифр нет.
-        val noData = SpeedFusion.fuse(estimates(s2 = 0.01f), 10_000L, priorPctPerMin = null)
+        // Мусор рампы ниже порога — цифр нет (не «затенённый приор»).
+        val noData = SpeedFusion.fuse(estimates(s2 = 0.01f), 10_000L)
         assertNull(noData.speedPctPerMin)
+        // Вообще нет живого источника — тоже null.
+        assertNull(SpeedFusion.fuse(estimates(), 10_000L).speedPctPerMin)
     }
 
     @Test
@@ -143,7 +144,6 @@ class SpeedFusionTest {
         val fused = SpeedFusion.fuse(
             estimates(s1Short = null, s1Long = null, s2 = 0.003f, s3 = 2.0f),
             120_000L,
-            priorPctPerMin = null,
             levelPct = 87
         )
         assertEquals(2.0f, fused.speedPctPerMin!!, 1e-4f)

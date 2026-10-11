@@ -64,6 +64,20 @@ class ChargeForecastTest {
     }
 
     @Test
+    fun speed_repeatedLevelTicks_keepsFirstTimestamp() {
+        // Регрессия: опрос 1 Гц держит уровень 50% всю минуту — дубликаты
+        // не должны сжимать шаг 1% до секунды перехода (иначе S3 даёт
+        // выброс ~60 %/мин на границе минуты и портит fusion/сводку).
+        val calc = ChargeSpeedCalculator()
+        for (t in 0L..59L) calc.addSample(t * 1_000L, 50)
+        calc.addSample(60_000L, 51)
+        for (t in 61L..119L) calc.addSample(t * 1_000L, 51)
+        calc.addSample(120_000L, 52)
+        val speed = calc.speedPctPerMin(120_000L)!!
+        assertTrue("ожидали ~1.0, получили $speed", abs(speed - 1f) < 0.1f)
+    }
+
+    @Test
     fun speed_levelFalling_returnsNull() {
         val calc = ChargeSpeedCalculator()
         for (i in 0..5) {
@@ -90,7 +104,7 @@ class ChargeForecastTest {
             speedPctPerMin = null,
             sessionAgeMs = 5 * min,
             isFull = false,
-            isCharging = true
+            sessionActive = true
         )
         assertEquals(ForecastAccuracy.COLLECTING, f.accuracy)
         assertNull(f.remainingSec)
@@ -106,7 +120,7 @@ class ChargeForecastTest {
             speedPctPerMin = 2f,
             sessionAgeMs = 5_000L,
             isFull = false,
-            isCharging = true
+            sessionActive = true
         )
         assertEquals(ForecastAccuracy.APPROXIMATE, f.accuracy)
         assertEquals(2797L, f.remainingSec)
@@ -120,7 +134,7 @@ class ChargeForecastTest {
             speedPctPerMin = 2f,
             sessionAgeMs = 25_000L,
             isFull = false,
-            isCharging = true
+            sessionActive = true
         )
         assertEquals(ForecastAccuracy.APPROXIMATE, f.accuracy)
         // Интеграл: 25%/2 линейных + будущие корзины 80-100 = 46.6 мин.
@@ -134,7 +148,7 @@ class ChargeForecastTest {
             speedPctPerMin = 2f,
             sessionAgeMs = 5 * min,
             isFull = false,
-            isCharging = true
+            sessionActive = true
         )
         assertEquals(ForecastAccuracy.APPROXIMATE, f.accuracy)
         // Интеграл: линейные 25%/2 + будущие корзины 80-100 = 46.6 мин —
@@ -152,7 +166,7 @@ class ChargeForecastTest {
             speedPctPerMin = 0.5f,
             sessionAgeMs = 12 * min,
             isFull = false,
-            isCharging = true,
+            sessionActive = true,
             estimatesAgreed = true
         )
         assertEquals(ForecastAccuracy.PRECISE, f.accuracy)
@@ -168,7 +182,7 @@ class ChargeForecastTest {
             speedPctPerMin = 1f,
             sessionAgeMs = 12 * min,
             isFull = false,
-            isCharging = true,
+            sessionActive = true,
             estimatesAgreed = false
         )
         assertEquals(ForecastAccuracy.APPROXIMATE, f.accuracy)
@@ -182,7 +196,7 @@ class ChargeForecastTest {
             speedPctPerMin = 1f,
             sessionAgeMs = 5 * min,
             isFull = false,
-            isCharging = true,
+            sessionActive = true,
             refining = true
         )
         assertEquals(ForecastAccuracy.REFINING, f.accuracy)
@@ -201,7 +215,7 @@ class ChargeForecastTest {
             speedPctPerMin = 1f,
             sessionAgeMs = 5 * min,
             isFull = false,
-            isCharging = true,
+            sessionActive = true,
             remainingEnergyUah = 2_000_000L,
             capacityUah = 4_000_000L
         )
@@ -228,7 +242,7 @@ class ChargeForecastTest {
                 speedPctPerMin = measuredSpeed,
                 sessionAgeMs = 12 * min,
                 isFull = false,
-                isCharging = true,
+                sessionActive = true,
                 estimatesAgreed = true
             )
             val remaining = f.remainingSec!!
@@ -247,7 +261,7 @@ class ChargeForecastTest {
             speedPctPerMin = 0.55f,
             sessionAgeMs = 12 * min,
             isFull = false,
-            isCharging = true,
+            sessionActive = true,
             estimatesAgreed = true
         )
         assertEquals(3795L, at80.remainingSec)
@@ -261,7 +275,7 @@ class ChargeForecastTest {
             speedPctPerMin = 0.01f,
             sessionAgeMs = 12 * min,
             isFull = false,
-            isCharging = true
+            sessionActive = true
         )
         assertEquals(ForecastAccuracy.COLLECTING, f.accuracy)
         assertNull(f.remainingSec)
@@ -276,7 +290,7 @@ class ChargeForecastTest {
             speedPctPerMin = 0.01f,
             sessionAgeMs = 12 * min,
             isFull = false,
-            isCharging = true
+            sessionActive = true
         )
         assertEquals(75000L, f.remainingSec)
     }
@@ -288,7 +302,9 @@ class ChargeForecastTest {
             speedPctPerMin = null,
             sessionAgeMs = 30 * min,
             isFull = true,
-            isCharging = false
+            // Кабель ещё вставлен — сессия формально активна, но ветка
+            // «полная» срабатывает раньше любого гейта.
+            sessionActive = true
         )
         assertTrue(f.isFull)
         assertEquals(0L, f.remainingSec)
@@ -296,13 +312,47 @@ class ChargeForecastTest {
 
     @Test
     fun forecast_notCharging_noRemaining() {
+        // Сессии нет (кабель не вставлен) — цифр нет, даже если скорость
+        // выглядит здоровой (design D7: гейт — «сессия активна»).
         val f = ChargeForecaster.forecast(
             levelPct = 50,
             speedPctPerMin = 1f,
             sessionAgeMs = 15 * min,
             isFull = false,
-            isCharging = false
+            sessionActive = false
         )
+        assertNull(f.remainingSec)
+        assertEquals(ForecastAccuracy.COLLECTING, f.accuracy)
+    }
+
+    @Test
+    fun forecast_delayedCharging_statusDoesNotHideNumbers() {
+        // Рампа Huawei P60 Pro: кабель уже вставлен (сессия активна),
+        // CHARGING ещё не пришёл. При старом гейте по isCharging цифры
+        // прятались — теперь их даёт только наличие опоры (D7).
+        val f = ChargeForecaster.forecast(
+            levelPct = 50,
+            speedPctPerMin = 2f,
+            sessionAgeMs = 1_000L,
+            isFull = false,
+            sessionActive = true
+        )
+        assertEquals(ForecastAccuracy.APPROXIMATE, f.accuracy)
+        assertEquals(2797L, f.remainingSec)
+    }
+
+    @Test
+    fun forecast_garbageSpeed_staysCollectingEvenWhenActive() {
+        // Мусор-гейт по скорости сохраняется (D7): сессия активна, но
+        // скорость ниже порога доверия вне доводки — цифр нет.
+        val f = ChargeForecaster.forecast(
+            levelPct = 50,
+            speedPctPerMin = 0.01f,
+            sessionAgeMs = 5 * min,
+            isFull = false,
+            sessionActive = true
+        )
+        assertEquals(ForecastAccuracy.COLLECTING, f.accuracy)
         assertNull(f.remainingSec)
     }
 

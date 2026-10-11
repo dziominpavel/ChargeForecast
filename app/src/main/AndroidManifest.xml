@@ -1,6 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!-- Фоновое слежение (background-tracking): сервис обязан жить, чтобы
+         поймать вставку кабеля — manifest-receiver неявный broadcast не
+         получит, а foreground service из фона с API 31+ не поднять. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- Отказ не останавливает измерение: виджет и экран продолжают
+         работать, уведомление сервиса просто не показывается. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <application
         android:name=".ChargeForecastApplication"
         android:allowBackup="true"
@@ -22,6 +32,41 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Постоянный сервис слежения: стартует при открытии приложения и
+             после перезагрузки. Тип specialUse — под единственного
+             честного потребителя: батарейный мониторинг. -->
+        <service
+            android:name=".service.ChargeForecastService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Persistent battery monitoring for charge-time forecast and remaining-usage widget, active while the device is charging or idle" />
+        </service>
+
+        <!-- Рестарт слежения после перезагрузки — без действия пользователя. -->
+        <receiver
+            android:name=".service.BootCompletedReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Виджет домашнего экрана: вторая поверхность состояния сессии.
+             Основное обновление — push от состояния (BatteryWidgetUpdater),
+             системный интервал в info-файле — страховка от замерзания. -->
+        <receiver
+            android:name=".widget.BatteryWidgetProvider"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/battery_widget_info" />
+        </receiver>
     </application>
 
 </manifest>

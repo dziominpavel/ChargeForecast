@@ -1,13 +1,17 @@
 package com.example.chargeforecast.session
 
 import com.example.chargeforecast.battery.BatterySnapshot
+import com.example.chargeforecast.battery.ChargeType
 import com.example.chargeforecast.forecast.CapacityTracker
 import com.example.chargeforecast.forecast.ChargeForecaster
 import com.example.chargeforecast.forecast.ChargeForecast
 import com.example.chargeforecast.forecast.ChargeSpeedCalculator
 import com.example.chargeforecast.forecast.CounterSpeedometer
+import com.example.chargeforecast.forecast.DischargeEstimate
+import com.example.chargeforecast.forecast.DischargeEstimator
 import com.example.chargeforecast.forecast.DisplayFilter
 import com.example.chargeforecast.forecast.ForecastAccuracy
+import com.example.chargeforecast.forecast.HistoryBlender
 import com.example.chargeforecast.forecast.InstantSpeedEstimator
 import com.example.chargeforecast.forecast.SpeedFusion
 import com.example.chargeforecast.forecast.TaperCurve
@@ -21,6 +25,7 @@ import com.example.chargeforecast.forecast.TaperCurveLearner
 // Тестируем на JVM с любым clock.
 internal class SessionEngine(
     private val cache: SessionCache? = null,
+    private val dischargeEstimator: DischargeEstimator? = null,
     private val sysfsCapacityUah: () -> Long? = { null }
 ) {
     private val calculator = ChargeSpeedCalculator()
@@ -35,6 +40,13 @@ internal class SessionEngine(
 
     private var plugDetectedAtMs: Long? = null
     private var sessionStartLevelPct: Int? = null
+    // Тип подключения сессии — фиксируется в секунду ноль (кабель
+    // вставлен → реальный AC/USB/Wireless). В момент отключения снапшот
+    // уже NONE, поэтому тип для сводки/истории храним отдельно.
+    private var sessionChargeType: ChargeType? = null
+    // Медиана истории последних сессий этого типа подключения — читается
+    // один раз в секунду ноль и держится до конца сессии (заморозка).
+    private var historyBaseRatePctPerMin: Float? = null
     private var emaCurrentUa: Long? = null
     private var lastEmaSampleMs: Long? = null
     // Пик тока — факт сессии для сводки, не для оценки скорости.
@@ -51,26 +63,44 @@ internal class SessionEngine(
 
     fun update(snapshot: BatterySnapshot?, nowMs: Long): SessionState {
         if (snapshot == null) return idle()
+        // Накопитель разряда копит только в простое, зарядкой якорится —
+        // один вызов на тик покрывает обе ветки (design D9).
+        dischargeEstimator?.update(snapshot, nowMs)
         if (!snapshot.isPlugged) {
             if (plugDetectedAtMs != null) {
-                // Сессия кончилась — сводка и ёмкость пишутся ОДИН раз,
-                // именно здесь; во время сессии кэш прошлой не трогаем.
+                // Сессия кончилась — сводка, история и ёмкость пишутся
+                // ОДИН раз, именно здесь; во время сессии кэш прошлой
+                // не трогаем.
                 lastCapacityUah?.let { cache?.saveCapacity(it) }
-                buildSummary(snapshot, nowMs)?.let { cache?.saveSummary(it) }
+                buildSummary(snapshot, nowMs)?.let { summary ->
+                    cache?.saveSummary(summary)
+                    // История тем же гейтом, что и сводка: buildSummary
+                    // вернул null → в буфер ничего не попало.
+                    summary.chargeType?.let { type ->
+                        cache?.appendHistory(type, summary.avgCcSpeedPctPerMin)
+                    }
+                }
                 // Обученная кривая профиля: слияние с прежней, персист.
                 curveLearner.learnedFactors()?.let { learned ->
-                    cache?.saveCurve(
-                        snapshot.chargeType, TaperCurve.merge(taperFactors, learned)
-                    )
+                    val type = sessionChargeType ?: snapshot.chargeType
+                    cache?.saveCurve(type, TaperCurve.merge(taperFactors, learned))
                 }
             }
             resetSession()
-            return idle()
+            // Снапшот сохраняем: в простое он единственный источник уровня
+            // заряда для виджета (режим разряда показывает, сколько осталось
+            // работать). Гейт по isPlugged у экрана и виджета от этого не
+            // меняется — снапшот разрядный.
+            return idle(snapshot, dischargeEstimate(snapshot))
         }
         if (plugDetectedAtMs == null) {
             // Секунда ноль: кабель подключён (переход isPlugged).
             plugDetectedAtMs = nowMs
             sessionStartLevelPct = snapshot.levelPct
+            sessionChargeType = snapshot.chargeType
+            // История прошлых сессий этого профиля — один раз на сессию;
+            // внутри сессии кэш не читается (заморозка, design D5).
+            historyBaseRatePctPerMin = cache?.loadHistoryMedian(snapshot.chargeType)
             // Кривая профиля на всю сессию: обученная из кэша или дефолт.
             taperFactors = cache?.loadCurve(snapshot.chargeType)
                 ?: TaperCurve.DEFAULT_FACTORS
@@ -112,8 +142,7 @@ internal class SessionEngine(
             ),
             levelPctPerMin = calculator.speedPctPerMin(nowMs)
         )
-        val prior = cache?.loadLastSpeed()
-        val fused = SpeedFusion.fuse(estimates, age, prior, snapshot.levelPct)
+        val fused = SpeedFusion.fuse(estimates, age, snapshot.levelPct)
         // В сводку копим только CC-фазу (рампа/доводка отфильтрованы
         // накопителем) и только устойчивую скорость: сэмплы «уточняю»
         // (нестабильная оценка) приор портить не должны.
@@ -144,18 +173,33 @@ internal class SessionEngine(
         baseRateEmaPctPerMin = rawBaseRate?.let { rb ->
             baseRateEmaPctPerMin?.let { e -> e * 0.95f + rb * 0.05f } ?: rb
         }
+        // Смесь истории и живых замеров (design D2–D4): с первой секунды
+        // несёт медиану прошлых сессий того же типа подключения, к
+        // 180-й секунде плавно уходит в чистые замеры. Смешивается
+        // базовая скорость (причина), показанная — base · factor(level).
+        val blendedBaseRate = HistoryBlender.blend(
+            historyBaseRatePctPerMin = historyBaseRatePctPerMin,
+            liveBaseRatePctPerMin = baseRateEmaPctPerMin,
+            refining = fused.refining,
+            ageMs = age
+        )
+        val blendedSpeed = blendedBaseRate?.let {
+            it * TaperCurve.factor(snapshot.levelPct, taperFactors)
+        }
         val raw = ChargeForecaster.forecast(
             levelPct = snapshot.levelPct,
-            speedPctPerMin = fused.speedPctPerMin,
+            speedPctPerMin = blendedSpeed,
             sessionAgeMs = age,
             isFull = snapshot.isFull,
-            isCharging = snapshot.isCharging,
+            // Сессия уже идёт (ветка isPlugged прошла) — запоздавший
+            // CHARGING не должен прятать цифры (design D7).
+            sessionActive = true,
             refining = fused.refining,
             estimatesAgreed = estimatesAgreed(estimates),
             remainingEnergyUah = remainingEnergyUah,
             capacityUah = capacityUah,
             taperFactors = taperFactors,
-            baseRatePctPerMin = baseRateEmaPctPerMin
+            baseRatePctPerMin = blendedBaseRate
         )
         // Фильтр показа: EMA тренда + округление до секунд — каждый тик
         // новое значение, экстраполированное до 100%.
@@ -165,7 +209,7 @@ internal class SessionEngine(
             snapshot = snapshot,
             forecast = forecast,
             sessionAgeMs = age,
-            error = null
+            discharge = DischargeEstimate.NONE
         )
     }
 
@@ -184,20 +228,37 @@ internal class SessionEngine(
         }
     }
 
-    private fun idle(): SessionState = SessionState(
-        snapshot = null,
+    // Оценка работы из накопленного расхода. Живой ёмкости в простое
+    // нет — берём sysfs или кэш, как на зарядке до первого замера.
+    private fun dischargeEstimate(snapshot: BatterySnapshot): DischargeEstimate {
+        val estimator = dischargeEstimator ?: return DischargeEstimate.NONE
+        val capacityUah = sysfsCapacityUah() ?: cache?.loadCapacity()
+        val remainingUah = capacityUah?.let { cap ->
+            snapshot.chargeCounterUah?.let { counter -> cap - counter }
+        }
+        return estimator.estimate(remainingUah)
+    }
+
+    private fun idle(
+        snapshot: BatterySnapshot? = null,
+        discharge: DischargeEstimate = DischargeEstimate.NONE
+    ): SessionState = SessionState(
+        snapshot = snapshot,
         forecast = ChargeForecast(
             speedPctPerMin = null,
             remainingSec = null,
             accuracy = ForecastAccuracy.COLLECTING,
             isFull = false
         ),
-        sessionAgeMs = 0L
+        sessionAgeMs = 0L,
+        discharge = discharge
     )
 
     private fun resetSession() {
         plugDetectedAtMs = null
         sessionStartLevelPct = null
+        sessionChargeType = null
+        historyBaseRatePctPerMin = null
         emaCurrentUa = null
         lastEmaSampleMs = null
         peakCurrentUa = null
@@ -214,6 +275,8 @@ internal class SessionEngine(
     }
 
     // Сводка завершённой сессии: средняя CC-фаза (без рампы и доводки).
+    // Тип подключения — из секунды ноль сессии: снапшот отключения в
+    // реальности уже ChargeType.NONE, а профилью были AC/USB/Wireless.
     // Без накопленных сэмплов сводки нет — приор прошлой не портится.
     // Короткие (<2% набора) и околонулевые сессии сводку не пишут:
     // мусорная тишина не должна становиться приором следующей.
@@ -230,7 +293,7 @@ internal class SessionEngine(
             gainedPct = gained,
             avgCcSpeedPctPerMin = avg,
             peakCurrentMa = peakCurrentUa?.let { it / 1000f },
-            chargeType = snapshot.chargeType
+            chargeType = sessionChargeType ?: snapshot.chargeType
         )
     }
 

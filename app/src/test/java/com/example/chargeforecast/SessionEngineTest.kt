@@ -2,12 +2,15 @@ package com.example.chargeforecast
 
 import com.example.chargeforecast.battery.BatterySnapshot
 import com.example.chargeforecast.battery.ChargeType
+import com.example.chargeforecast.forecast.DischargeEstimate
+import com.example.chargeforecast.forecast.DischargeEstimator
 import com.example.chargeforecast.forecast.ForecastAccuracy
 import com.example.chargeforecast.session.SessionCache
 import com.example.chargeforecast.session.SessionEngine
 import com.example.chargeforecast.session.SessionState
 import com.example.chargeforecast.session.SessionSummary
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -182,8 +185,156 @@ class SessionEngineTest {
             snap(6 * 60_000L, 55, plugged = false, charging = false), 6 * 60_000L
         )
         assertEquals(summary, cache.loadSummary())
-        // Приор следующей сессии — из сводки, заморожен.
-        assertEquals(1.0f, cache.loadLastSpeed()!!, 0.05f)
+        // Опора следующей сессии — история, заморожена в момент отключения
+        // (тем же гейтом, что и сводка).
+        assertEquals(1.0f, cache.loadHistoryMedian(ChargeType.AC)!!, 0.05f)
+    }
+
+    @Test
+    fun activeSession_doesNotTouchHistory() {
+        // Во время сессии агрегат истории заморожен: кэш прошлой сессии
+        // не читается-не пишется до момента отключения.
+        val cache = SessionCache(FakeSharedPreferences())
+        cache.appendHistory(ChargeType.AC, 2.0f)
+        val engine = SessionEngine(cache)
+        var t = 0L
+        while (t <= 5 * 60_000L) {
+            val level = (50 + t / 60_000L).toInt().coerceAtMost(99)
+            engine.update(snap(t, level), t)
+            if (t % 60_000L == 0L) {
+                assertEquals(
+                    "агрегат истории изменился внутри сессии на ${t / 1000} сек",
+                    2.0f,
+                    cache.loadHistoryMedian(ChargeType.AC)!!,
+                    1e-6f
+                )
+            }
+            t += 1_000L
+        }
+        // Отключение проходит гейт сводки → в буфер дописана сессия.
+        engine.update(
+            snap(5 * 60_000L, 55, plugged = false, charging = false),
+            5 * 60_000L
+        )
+        // Буфер [2.0, ~1.0] → медиана ~1.5: сессия попала ровно один раз.
+        assertEquals(
+            1.5f,
+            cache.loadHistoryMedian(ChargeType.AC)!!,
+            0.1f
+        )
+    }
+
+    @Test
+    fun historyBlend_firstSecondShown_monotoneToPureLive() {
+        // Сценарий спеки «Плавный переход»: история 2.0 %/мин, живые
+        // замеры 1.5 %/мин. Цифры — с первого тика; переход монотонный
+        // (w плавно убывает), на 180-й секунде ведут чистые замеры.
+        val cache = SessionCache(FakeSharedPreferences())
+        cache.appendHistory(ChargeType.AC, 2.0f)
+        val engine = SessionEngine(cache)
+        // Эталон без истории идёт вровень с основным движком: на 200-й
+        // секунде оба обязаны показывать чистые живые замеры.
+        val referenceEngine = SessionEngine(SessionCache(FakeSharedPreferences()))
+        var prev: Long? = null
+        var t = 0L
+        while (t <= 200_000L) {
+            val level = (50 + t * 3L / 120_000L).toInt().coerceAtMost(99)
+            // Скорость ровная 1.5 %/мин: счётчик +60k мкА·ч/мин при
+            // ёмкости 4 млн, ток 3600 мА — S1 и S2 согласованы.
+            val snapshot = snap(
+                t, level,
+                currentMa = 3_600f,
+                counterUah = 2_000_000L + t * 60_000L / 60_000L
+            )
+            val st = engine.update(snapshot, t)
+            referenceEngine.update(snapshot, t)
+            val displayed = st.forecast.remainingSec
+            // Цифры с первой секунды — история несёт остаток сразу.
+            assertNotNull("на ${t / 1000}с остаток пропал", displayed)
+            // Скорость показанной — монотонная транзиция без рывков:
+            // каждый тик изменение ≤ 10% (смесь меняется плавно).
+            val previous = prev
+            if (previous != null) {
+                assertTrue(
+                    "рывок остатка $previous → $displayed на ${t / 1000}с",
+                    displayed!! <= previous * 1.10f + 30f
+                )
+            }
+            prev = displayed
+            t += 1_000L
+        }
+        // На 180-й секунде w=0: итог равен чистому живому замеру.
+        // Ожидание считаем против эталонного движка без истории (тот же
+        // сценарий) — история больше не влияет: показанный и скорость
+        // совпадают. Абсолютный коридор фиксирует интеграл доводки:
+        // база 1.5 %/мин на уровне 55 с 5%-корзинами после 80% даёт
+        // ≈ 3530с (не 1800с линейного деления и не ≈2650с с историей 2.0).
+        val pure = engine.update(
+            snap(
+                200_000L, 55,
+                currentMa = 3_600f,
+                counterUah = 2_000_000L + 200_000L * 60_000L / 60_000L
+            ),
+            200_000L
+        )
+        val reference = referenceEngine.update(
+            snap(
+                200_000L, 55,
+                currentMa = 3_600f,
+                counterUah = 2_000_000L + 200_000L * 60_000L / 60_000L
+            ),
+            200_000L
+        )
+        assertEquals(
+            "скорость на 200с должна быть чисто живой",
+            reference.forecast.speedPctPerMin!!,
+            pure.forecast.speedPctPerMin!!,
+            0.01f
+        )
+        val drift = pure.forecast.remainingSec!! - reference.forecast.remainingSec!!
+        // Эталон сам может отставать: его подъём от первого тика был
+        // меньше порога тренда (40с за 60с), и гейт фильтра эталона ещё
+        // держит значение первого тика. Связка «скорость равна + коридор
+        // живого» уже исключает влияние истории; дрейф — мягкая санитария.
+        assertTrue(
+            "показанный ${pure.forecast.remainingSec} отклонился от эталона " +
+                "${reference.forecast.remainingSec} на $drift сек",
+            drift in -180L..180L
+        )
+        assertTrue(
+            "ожидали ~3530с (интеграл доводки, чистый live), получили ${pure.forecast.remainingSec}",
+            pure.forecast.remainingSec!! in 3400L..3700L
+        )
+    }
+
+    @Test
+    fun shortSession_gainBelowGate_historyUntouched() {
+        // Набрано 1% (< SUMMARY_MIN_GAINED_PCT=2), темп здоровый:
+        // сводки нет — и в истории сессии нет (тот же гейт).
+        val cache = SessionCache(FakeSharedPreferences())
+        val engine = SessionEngine(cache)
+        var t = 0L
+        while (t <= 5 * 60_000L) {
+            val level = if (t < 4 * 60_000L) 50 else 51
+            engine.update(
+                snap(
+                    t, level,
+                    counterUah = capacity * 50L / 100L + t * 40_000L / 60_000L
+                ),
+                t
+            )
+            t += 1_000L
+        }
+        engine.update(
+            snap(
+                5 * 60_000L, 51,
+                counterUah = capacity * 50L / 100L + 5 * 60_000L * 40_000L / 60_000L,
+                plugged = false, charging = false
+            ),
+            5 * 60_000L
+        )
+        assertNull(cache.loadSummary())
+        assertNull(cache.loadHistoryMedian(ChargeType.AC))
     }
 
     @Test
@@ -232,7 +383,8 @@ class SessionEngineTest {
             5 * 60_000L
         )
         assertNull(cache.loadSummary())
-        assertNull(cache.loadLastSpeed())
+        // Тот же гейт: тихая сессия не попадает в историю.
+        assertNull(cache.loadHistoryMedian(ChargeType.AC))
     }
 
     @Test
@@ -261,7 +413,8 @@ class SessionEngineTest {
             5 * 60_000L
         )
         assertNull(cache.loadSummary())
-        assertNull(cache.loadLastSpeed())
+        // Нестабильная оценка не попадает и в историю (тот же гейт).
+        assertNull(cache.loadHistoryMedian(ChargeType.AC))
     }
 
     @Test
@@ -369,5 +522,58 @@ class SessionEngineTest {
             "остаток должен быть минуты (<15 мин), а не сотни часов; получили ${st.forecast.remainingSec}",
             st.forecast.remainingSec!! < 15L * 60L
         )
+    }
+
+    @Test
+    fun idle_reportsDischargeEstimate_fromAccumulator() {
+        // Простой: экран и виджет читают одно и то же состояние сессии —
+        // оценка работы берётся из накопленного расхода (design D6).
+        val cache = SessionCache(FakeSharedPreferences())
+        cache.saveCapacity(capacity)
+        val engine = SessionEngine(cache, DischargeEstimator())
+
+        // 400 мА: счётчик падает на 100k мкА·ч за 15 минут.
+        var t = 0L
+        var counter = 2_000_000L
+        engine.update(snap(t, 50, plugged = false, charging = false, counterUah = counter), t)
+        repeat(3) {
+            t += 900_000L
+            counter -= 100_000L
+            engine.update(snap(t, 50, plugged = false, charging = false, counterUah = counter), t)
+        }
+        t += 900_000L
+        counter -= 100_000L
+        val state = engine.update(
+            snap(t, 50, plugged = false, charging = false, counterUah = counter),
+            t
+        )
+        // Остаток 2.4 млн мкА·ч / 400k мкА = 6 ч = 21600 с.
+        assertTrue("простой должен отдавать оценку, а не зарядку", !state.discharge.collecting)
+        assertEquals(21_600L, state.discharge.remainingSec!!)
+    }
+
+    @Test
+    fun charging_reportsNoDischargeEstimate() {
+        // На зарядке режим разряда неактуален — виджет показывает отсчёт.
+        val engine = SessionEngine(SessionCache(FakeSharedPreferences()), DischargeEstimator())
+        val state = engine.update(snap(0, 50), 0)
+        assertEquals(DischargeEstimate.NONE, state.discharge)
+    }
+
+    @Test
+    fun idle_withoutAccumulatorBase_showsCollecting_notZeroHours() {
+        // Опоры нет (набора расхода ещё не было) — честный сбор данных,
+        // а не нулевые часы (спека discharge-estimate).
+        val engine = SessionEngine(SessionCache(FakeSharedPreferences()), DischargeEstimator())
+        val state = engine.update(snap(0, 50, plugged = false, charging = false), 0)
+        assertEquals(DischargeEstimate.COLLECTING, state.discharge)
+    }
+
+    @Test
+    fun withoutDischargeEstimator_reportsNone() {
+        // Без оценщика (консервативный режим) — пусто, но не «0 ч».
+        val engine = SessionEngine()
+        val state = engine.update(snap(0, 50, plugged = false, charging = false), 0)
+        assertEquals(DischargeEstimate.NONE, state.discharge)
     }
 }

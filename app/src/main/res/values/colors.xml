@@ -1,3 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!-- Цвета виджета. RemoteViews живёт вне Compose и не видит токены
+         MaterialTheme, поэтому значения продублированы здесь — ровно те же,
+         что в ui/theme/Color.kt (палитра «Volt»). Менять палитру — в обоих
+         местах, чтобы виджет и экран не разошлись. -->
+    <color name="widget_surface">#141A26</color>
+    <color name="widget_text_primary">#E6E6E6</color>
+    <color name="widget_text_secondary">#9AA3B2</color>
+    <color name="widget_accent">#D1FF00</color>
 </resources>

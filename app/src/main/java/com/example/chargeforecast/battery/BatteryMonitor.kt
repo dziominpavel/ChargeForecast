@@ -13,7 +13,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.isActive
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 // Живой источник состояния батареи. Обновления по системным
@@ -55,22 +57,35 @@ class BatteryMonitor(
         } else {
             readSnapshotNow()?.let { _snapshots.value = it }
         }
-        // Тик с замерами: broadcast приходит только при изменении
-        // батареи, а ток/счётчик плывут непрерывно (~1 Гц). На зарядке
-        // экономить нечего — опрос раз в секунду; на разряде — 10 сек.
+        // Тик с замерами — только на зарядке (design D10): ток и счётчик
+        // живут ~1 Гц, телефон у розетки — экономить нечего. В простое
+        // цикл остановлен полностью: круглосуточные пробуждения ради
+        // экрана, которого нет, были бы лишь расходом батареи. В простое
+        // источником снапшотов остаются broadcast'ы ACTION_BATTERY_CHANGED
+        // (уровень, температура, напряжение) — их оценщику и достаточно.
+        // Пробуждение — ACTION_POWER_CONNECTED из сервиса → refresh(): он
+        // выставляет isPlugged и тем самым запускает тик заново.
         pollJob = scope.launch {
-            while (isActive && started) {
-                delay(pollDelayMs(_snapshots.value?.isPlugged == true))
-                try {
-                    val fresh = readSnapshotNow()
-                    val prev = _snapshots.value
-                    if (fresh != null && (prev == null || !sameReading(prev, fresh))) {
-                        _snapshots.value = fresh
+            snapshots
+                .map { it?.isPlugged == true }
+                .distinctUntilChanged()
+                .collectLatest { plugged ->
+                    // collectLatest отменяет предыдущий блок — здесь
+                    // просто ждём смены подключения.
+                    if (!plugged) return@collectLatest
+                    while (true) {
+                        delay(POLL_ACTIVE_MS)
+                        try {
+                            val fresh = readSnapshotNow()
+                            val prev = snapshots.value
+                            if (fresh != null && (prev == null || !sameReading(prev, fresh))) {
+                                _snapshots.value = fresh
+                            }
+                        } catch (_: Exception) {
+                            // Пропускаем тик, следующий попробует снова.
+                        }
                     }
-                } catch (_: Exception) {
-                    // Пропускаем тик, следующий попробует снова.
                 }
-            }
         }
     }
 
@@ -83,6 +98,21 @@ class BatteryMonitor(
             appContext.unregisterReceiver(receiver)
         } catch (_: IllegalArgumentException) {
             // Уже отписан — не ошибка.
+        }
+    }
+
+    // Принудительный свежий замер по событию, без ожидания тика опроса.
+    // Так подключение кабеля будит конвейер в секунды (design D3), даже
+    // если системный broadcast о батарее задержан или опрос в простое
+    // остановлен. Пропускаем гейт sameReading: событие уже сообщает, что
+    // что-то изменилось.
+    fun refresh() {
+        scope.launch {
+            try {
+                readSnapshotNow()?.let { _snapshots.value = it }
+            } catch (_: Exception) {
+                // Один неудачный замер не должен ронять пробуждение.
+            }
         }
     }
 
@@ -134,12 +164,8 @@ class BatteryMonitor(
     }
 
     companion object {
-        const val POLL_MS = 10_000L
+        // Тик только для зарядки: в простое опроса нет (design D10).
         const val POLL_ACTIVE_MS = 1_000L
-
-        // Чистая функция для unit-теста интервалов по состоянию.
-        fun pollDelayMs(plugged: Boolean): Long =
-            if (plugged) POLL_ACTIVE_MS else POLL_MS
     }
 }
 

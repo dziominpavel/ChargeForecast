@@ -21,6 +21,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.chargeforecast.service.ChargeForecastService
 import com.example.chargeforecast.ui.SessionScreen
 import com.example.chargeforecast.ui.SessionViewModel
 import com.example.chargeforecast.ui.theme.ChargeForecastTheme
@@ -29,6 +30,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Слежение поднимаем при открытии: дальше оно живёт само и
+        // после перезагрузки (BootCompletedReceiver).
+        ChargeForecastService.start(this)
         enableEdgeToEdge()
         setContent {
             ChargeForecastTheme {
@@ -45,10 +49,10 @@ fun ChargeForecastApp(viewModel: SessionViewModel = viewModel()) {
     val snackbar = remember { SnackbarHostState() }
 
     // Видимые ошибки системы — в Snackbar, не глушим (см. AGENTS.md).
-    LaunchedEffect(state.error) {
-        val message = state.error ?: return@LaunchedEffect
-        snackbar.showSnackbar(message)
-        viewModel.dismissError()
+    // Поток событий: каждое сообщение показывается ровно один раз, от
+    // ручного «подтверждения» ошибки отказались (design D7).
+    LaunchedEffect(Unit) {
+        viewModel.errors.collect { message -> snackbar.showSnackbar(message) }
     }
 
     Scaffold(

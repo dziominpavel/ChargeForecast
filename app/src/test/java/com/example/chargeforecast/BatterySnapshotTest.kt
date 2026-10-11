@@ -121,6 +121,46 @@ class BatterySnapshotTest {
     }
 
     @Test
+    fun dischargeCurrent_populatedOnlyWhileDischarging() {
+        // Разряд: датчик отдаёт отрицательный ток — модуль попадает в
+        // отдельное поле, currentMa остаётся пустым (как и раньше).
+        val discharging = extras(
+            status = BatteryManager.BATTERY_STATUS_DISCHARGING,
+            plugged = 0,
+            currentNowUa = -500_000L
+        ).toSnapshot(0L)
+        assertEquals(500_000L, discharging.dischargeCurrentUa)
+        assertNull(discharging.currentMa)
+
+        // Зарядка и полная батарея — поля разряда нет (ток на входе).
+        assertNull(extras(currentNowUa = 1_500_000L).toSnapshot(0L).dischargeCurrentUa)
+        assertNull(
+            extras(
+                status = BatteryManager.BATTERY_STATUS_FULL,
+                currentNowUa = 1_500_000L
+            ).toSnapshot(0L).dischargeCurrentUa
+        )
+
+        // Датчика нет — поле пустое, fallback на дельту уровня.
+        assertNull(
+            extras(
+                status = BatteryManager.BATTERY_STATUS_DISCHARGING,
+                plugged = 0,
+                currentNowUa = null
+            ).toSnapshot(0L).dischargeCurrentUa
+        )
+
+        // Нулевое значение — отсутствие датчика, а не нулевой расход.
+        assertNull(
+            extras(
+                status = BatteryManager.BATTERY_STATUS_DISCHARGING,
+                plugged = 0,
+                currentNowUa = 0L
+            ).toSnapshot(0L).dischargeCurrentUa
+        )
+    }
+
+    @Test
     fun counter_passesThroughPositiveOnly() {
         assertEquals(2_000_000L, extras().toSnapshot(0L).chargeCounterUah)
         assertNull(extras(chargeCounterUah = null).toSnapshot(0L).chargeCounterUah)

@@ -11,6 +11,8 @@
     <string name="session_accuracy_precise">точно</string>
     <string name="session_accuracy_refining">уточняю</string>
     <string name="session_level">%1$d%%</string>
+    <!-- Пометка приблизительности рядом со временем -->
+    <string name="approx_marker">≈ %1$s</string>
     <string name="session_speed">%1$s %%/мин</string>
     <string name="session_remaining">Осталось %1$s</string>
     <string name="session_type_ac">Сеть · AC</string>
@@ -25,4 +27,24 @@
     <string name="time_seconds">%1$d с</string>
     <string name="time_minutes_seconds">%1$d мин %2$d с</string>
     <string name="time_hours_minutes_seconds">%1$d ч %2$d мин %3$d с</string>
+
+    <!-- Фоновое слежение: канал и служебное уведомление. Важность MIN —
+         без звука, всплешки и всплывающего окна, одна строка. -->
+    <string name="notification_channel_tracking">Слежение за зарядкой</string>
+    <string name="notification_channel_tracking_desc">Служебное уведомление. Позволяет приложению самому замечать вставку кабеля и обновлять виджет, не открывая приложение.</string>
+    <string name="notification_tracking_active">Слежение за зарядкой активно</string>
+    <string name="notification_charging">Идёт зарядка</string>
+    <string name="notification_full">Заряжено полностью</string>
+
+    <!-- Ошибки фонового слежения -->
+    <string name="error_service_start_blocked">Фоновое слежение не запустилось (%1$s). Откройте приложение — виджет и экран обновятся.</string>
+
+    <!-- Виджет: оценка работы телефона — всегда приблизительная -->
+    <string name="widget_charging_title">До 100%</string>
+    <string name="widget_discharge_title">Осталось работать</string>
+    <string name="widget_collecting">Собираю данные о расходе…</string>
+    <string name="widget_measuring">Измеряю…</string>
+    <string name="widget_no_data">Собираю данные…</string>
+    <string name="widget_not_tracking">Слежение остановлено — откройте приложение</string>
+    <string name="widget_full_title">Заряжено полностью</string>
 </resources>

@@ -2,8 +2,10 @@ package com.example.chargeforecast.forecast
 
 // Чистый fusion трёх спидометров по ярусам возраста сессии (см. design D1):
 //
-//   0-20 сек  → S2 (ток EMA) + приор прошлой сессии — единственный
-//               источник с секунды ноль;
+//   0-20 сек  → S2 (ток EMA) с credible-фильтром — единственный
+//               живой источник с секунды ноль (приор прошлой сессии
+//               убран: вместо него — плавная смесь HistoryBlender,
+//               стоящая ПОСЛЕ fusion);
 //   20-90 сек → S1(30с) доминирует, S2 кросс-чек;
 //   >90 сек   → S1(2м) доминирует, S3 кросс-чек;
 //   расхождение доминантного и кросс-чека > 40% → консервативная
@@ -31,7 +33,6 @@ object SpeedFusion {
     fun fuse(
         estimates: Estimates,
         sessionAgeMs: Long,
-        priorPctPerMin: Float? = null,
         levelPct: Int = 0
     ): Fused {
         // В доводке (уровень ≥ 80%) медленные скорости честные —
@@ -43,12 +44,11 @@ object SpeedFusion {
             }
         val raw = when {
             sessionAgeMs < TIER_MEASURING_MAX_MS -> {
-                // Секунда ноль: живой источник один — ток; мусор рампы
-                // затеняется приором прошлой сессии (см. InstantSpeedEstimator).
+                // Секунда ноль: живой источник один — ток. Мусор рампы
+                // (ниже порога) — это отсутствие данных, не скорость:
+                // HistoryBlender подхватит историю.
                 Fused(
-                    InstantSpeedEstimator.selectInstantSpeed(
-                        estimates.currentPctPerMin, priorPctPerMin
-                    ),
+                    credible(estimates.currentPctPerMin),
                     refining = false
                 )
             }

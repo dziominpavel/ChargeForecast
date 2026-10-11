@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Размеры виджета. RemoteViews живёт вне Compose и не видит
+         ChargeDimens (ui/theme/Dimens.kt), поэтому значения продублированы —
+         радиус совпадает с CardCorner, отступ — с CardPadding. -->
+    <dimen name="widget_corner">16dp</dimen>
+    <dimen name="widget_padding">12dp</dimen>
+    <dimen name="widget_gap">4dp</dimen>
+    <dimen name="widget_title_size">13sp</dimen>
+    <dimen name="widget_time_size">20sp</dimen>
+    <dimen name="widget_level_size">13sp</dimen>
+</resources>

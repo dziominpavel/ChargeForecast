@@ -7,7 +7,8 @@ import kotlin.math.roundToLong
 // ёмкость выводится из счётчика остатка и уровня, скорость — из тока.
 // Точность низкая (ток плавает, уровень грубый), но цифры есть сразу;
 // в fusion её вес доминирует только в первые секунды, дальше ведут
-// измеренные спидометры (S1/S3).
+// измеренные спидометры (S1/S3). Приор прошлой сессии здесь больше
+// не живёт — история подхватывает мусор рампы через HistoryBlender.
 // Чистый объект — полностью тестируем на JVM.
 object InstantSpeedEstimator {
 
@@ -41,16 +42,4 @@ object InstantSpeedEstimator {
 
     // Ниже — мусор рампы, а не зарядка (даёт «1000 часов» остатка).
     const val MIN_CREDIBLE_SPEED_PCT_PER_MIN = 0.05f
-
-    // Выбор опоры мгновенной скорости. Мусор рампы (ниже порога) НЕ должен
-    // затенять приор из кэша — на разгоне берём максимум из двух опор:
-    // рампа занижает, кэш прошлой сессии ближе к правде с секунды 0.
-    fun selectInstantSpeed(instantLive: Float?, prior: Float?): Float? {
-        val credible = instantLive?.takeIf { it >= MIN_CREDIBLE_SPEED_PCT_PER_MIN }
-        return when {
-            credible != null && prior != null -> maxOf(credible, prior)
-            credible != null -> credible
-            else -> prior
-        }
-    }
 }
