@@ -532,11 +532,12 @@ class SessionEngineTest {
         cache.saveCapacity(capacity)
         val engine = SessionEngine(cache, DischargeEstimator())
 
-        // 400 мА: счётчик падает на 100k мкА·ч за 15 минут.
+        // 400 мА: счётчик падает на 100k мкА·ч за 15 минут. Порог входа —
+        // 2 часа наблюдаемого времени внутри окна, значит интервалов 8.
         var t = 0L
         var counter = 2_000_000L
         engine.update(snap(t, 50, plugged = false, charging = false, counterUah = counter), t)
-        repeat(3) {
+        repeat(7) {
             t += 900_000L
             counter -= 100_000L
             engine.update(snap(t, 50, plugged = false, charging = false, counterUah = counter), t)
@@ -547,9 +548,11 @@ class SessionEngineTest {
             snap(t, 50, plugged = false, charging = false, counterUah = counter),
             t
         )
-        // Остаток 2.4 млн мкА·ч / 400k мкА = 6 ч = 21600 с.
+        // Остаток 2.8 млн мкА·ч / 400k мкА = 7 ч = 25200 с.
         assertTrue("простой должен отдавать оценку, а не зарядку", !state.discharge.collecting)
-        assertEquals(21_600L, state.discharge.remainingSec!!)
+        assertEquals(25_200L, state.discharge.remainingSec!!)
+        assertEquals(400_000f, state.discharge.averageCurrentUa!!, 1f)
+        assertEquals(7_200_000L, state.discharge.trackedMs)
     }
 
     @Test

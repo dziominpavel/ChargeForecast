@@ -4,12 +4,24 @@
      процесс убили намертво и сервис не восстановился. Основное обновление —
      push от состояния (design D5), интервал лишь даёт системе повод
      перезапустить процесс и отрисовать честное состояние «слежение
-     остановлено» вместо застывшего числа. -->
+     остановлено» вместо застывшего числа.
+
+     Ресайз объявлен честно (design D7): минимум — узкая полоса в одну
+     строку, максимум — широкое поле с крупными кеглями. Целевая ячейка
+     и превью — привычные 3×2. Бакет выбирается по фактическому
+     dp-размеру ячейки, см. WidgetText.sizeBucket. -->
 <appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
     android:description="@string/notification_channel_tracking_desc"
     android:initialLayout="@layout/widget_battery"
     android:minHeight="110dp"
     android:minWidth="180dp"
+    android:maxResizeHeight="300dp"
+    android:maxResizeWidth="420dp"
+    android:minResizeHeight="45dp"
+    android:minResizeWidth="110dp"
+    android:previewLayout="@layout/widget_battery"
     android:resizeMode="horizontal|vertical"
+    android:targetCellHeight="2"
+    android:targetCellWidth="3"
     android:updatePeriodMillis="1800000"
     android:widgetCategory="home_screen" />

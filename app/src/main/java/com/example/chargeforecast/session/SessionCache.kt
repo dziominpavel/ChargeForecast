@@ -3,6 +3,7 @@ package com.example.chargeforecast.session
 import android.content.Context
 import android.content.SharedPreferences
 import com.example.chargeforecast.battery.ChargeType
+import com.example.chargeforecast.forecast.DischargeSample
 import com.example.chargeforecast.forecast.DischargeState
 
 // Крошечный кэш прошлой сессии в SharedPreferences (без зависимостей):
@@ -81,28 +82,27 @@ class SessionCache(private val prefs: SharedPreferences) {
         }
     }
 
-    // Состояние накопителя расхода (design D9): переживает убийство
-    // процесса OEM-оболочкой и перезагрузку. Промежуток через ребут
-    // отсекает сам оценщик по метке времени.
+    // Состояние оценщика разряда (design D4, D9): кольцо интервалов окна
+    // плюс якоря последнего замера — переживает убийство процесса
+    // OEM-оболочкой и перезагрузку. Промежуток через ребут отсекает сам
+    // оценщик по метке времени. Прежние скаляры накопителя не
+    // мигрируются: окно начинается пустым, а не с искажённого среднего.
     fun saveDischarge(state: DischargeState) {
         prefs.edit()
-            .putFloat(KEY_DISCHARGE_SMOOTHED_UA, state.smoothedCurrentUa ?: -1f)
+            .putString(KEY_DISCHARGE_SAMPLES, encodeSamples(state.samples))
             .putLong(KEY_DISCHARGE_LAST_SAMPLE_MS, state.lastSampleMs ?: -1L)
             .putLong(KEY_DISCHARGE_LAST_COUNTER_UAH, state.lastCounterUah ?: -1L)
-            .putLong(KEY_DISCHARGE_TRACKED_MS, state.trackedMs)
             .apply()
     }
 
     fun loadDischarge(): DischargeState? {
-        if (!prefs.contains(KEY_DISCHARGE_TRACKED_MS)) return null
+        if (!prefs.contains(KEY_DISCHARGE_SAMPLES)) return null
         return DischargeState(
-            smoothedCurrentUa = prefs
-                .getFloat(KEY_DISCHARGE_SMOOTHED_UA, -1f).takeIf { it > 0f },
+            samples = decodeSamples(prefs.getString(KEY_DISCHARGE_SAMPLES, null)),
             lastSampleMs = prefs
                 .getLong(KEY_DISCHARGE_LAST_SAMPLE_MS, -1L).takeIf { it >= 0L },
             lastCounterUah = prefs
-                .getLong(KEY_DISCHARGE_LAST_COUNTER_UAH, -1L).takeIf { it > 0L },
-            trackedMs = prefs.getLong(KEY_DISCHARGE_TRACKED_MS, 0L).coerceAtLeast(0L)
+                .getLong(KEY_DISCHARGE_LAST_COUNTER_UAH, -1L).takeIf { it > 0L }
         )
     }
 
@@ -111,6 +111,26 @@ class SessionCache(private val prefs: SharedPreferences) {
             .coerceIn(0, HISTORY_CAPACITY)
         return (0 until count).mapNotNull { index ->
             prefs.getFloat(historyKey(chargeType, index), -1f).takeIf { it > 0f }
+        }
+    }
+
+    // Кольцо интервалов: плоская строка "atMs:durationMs:uah;...",
+    // без зависимостей. Лимит корзин держит оценщик при обрезке окна.
+    private fun encodeSamples(samples: List<DischargeSample>): String =
+        samples.joinToString(SAMPLE_SEPARATOR) {
+            "${it.atMs}$FIELD_SEPARATOR${it.durationMs}$FIELD_SEPARATOR${it.dischargedUah}"
+        }
+
+    private fun decodeSamples(raw: String?): List<DischargeSample> {
+        if (raw.isNullOrBlank()) return emptyList()
+        return raw.split(SAMPLE_SEPARATOR).mapNotNull { entry ->
+            val parts = entry.split(FIELD_SEPARATOR)
+            if (parts.size != 3) return@mapNotNull null
+            val atMs = parts[0].toLongOrNull() ?: return@mapNotNull null
+            val durationMs = parts[1].toLongOrNull() ?: return@mapNotNull null
+            val dischargedUah = parts[2].toLongOrNull() ?: return@mapNotNull null
+            if (atMs < 0L || durationMs <= 0L || dischargedUah < 0L) return@mapNotNull null
+            DischargeSample(atMs = atMs, durationMs = durationMs, dischargedUah = dischargedUah)
         }
     }
 
@@ -139,11 +159,13 @@ class SessionCache(private val prefs: SharedPreferences) {
         private const val KEY_SUMMARY_PEAK_MA = "summary_peak_current_ma"
         private const val KEY_SUMMARY_CHARGE_TYPE = "summary_charge_type"
 
-        // Накопитель расхода (см. DischargeEstimator).
-        private const val KEY_DISCHARGE_SMOOTHED_UA = "discharge_smoothed_ua"
+        // Накопитель расхода (см. DischargeEstimator): кольцо интервалов
+        // окна плюс якоря. Прежние ключи скаляров намеренно не читаются.
+        private const val KEY_DISCHARGE_SAMPLES = "discharge_samples_v2"
         private const val KEY_DISCHARGE_LAST_SAMPLE_MS = "discharge_last_sample_ms"
         private const val KEY_DISCHARGE_LAST_COUNTER_UAH = "discharge_last_counter_uah"
-        private const val KEY_DISCHARGE_TRACKED_MS = "discharge_tracked_ms"
+        private const val SAMPLE_SEPARATOR = ";"
+        private const val FIELD_SEPARATOR = ":"
 
         // Ёмкость истории: последних N сессий на тип подключения.
         const val HISTORY_CAPACITY = 5

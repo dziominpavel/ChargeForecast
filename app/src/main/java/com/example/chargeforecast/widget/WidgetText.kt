@@ -20,6 +20,25 @@ enum class WidgetMode {
     NO_DATA
 }
 
+// Бакет размера ячейки виджета (design D7).
+enum class WidgetSize {
+    // Полоса в одну строку: уровень, время, короткая подпись.
+    NARROW,
+    // Привычные три строки: режим, время, уровень.
+    MEDIUM,
+    // Широкое/высокое поле: те же три строки крупнее.
+    WIDE
+}
+
+// Границы бакетов размера (design D7) в dp. Опора — минимальная ячейка
+// 180×110 dp из battery_widget_info: это средний бакет, три строки. Полоса
+// в одну строку заметно ниже (одна ячейка по высоте) — узкий бакет.
+// Широкий бакет начинается там, где есть место под крупные кегли.
+const val NARROW_MAX_WIDTH_DP = 140
+const val NARROW_MAX_HEIGHT_DP = 90
+const val WIDE_MIN_WIDTH_DP = 340
+const val WIDE_MIN_HEIGHT_DP = 180
+
 // Чистое представление виджета: решение «что показывать» без Context.
 // Строки из ресурсов резолвит провайдер — так форматирование обоих
 // режимов тестируется на JVM.
@@ -34,6 +53,18 @@ data class WidgetModel(
 )
 
 object WidgetText {
+
+    // Бакет размера по фактическому dp-размеру ячейки (design D7): один
+    // адаптивный виджет, у каждого бакета своя раскладка и кегли. Границы
+    // взяты так, чтобы полоса 1×3 попадала в узкий бакет, а привычный
+    // 3×2 — в средний.
+    fun sizeBucket(widthDp: Int, heightDp: Int): WidgetSize = when {
+        widthDp >= WIDE_MIN_WIDTH_DP && heightDp >= WIDE_MIN_HEIGHT_DP ->
+            WidgetSize.WIDE
+        widthDp < NARROW_MAX_WIDTH_DP || heightDp < NARROW_MAX_HEIGHT_DP ->
+            WidgetSize.NARROW
+        else -> WidgetSize.MEDIUM
+    }
 
     fun model(state: SessionState, tracking: Boolean): WidgetModel {
         val level = state.snapshot?.levelPct

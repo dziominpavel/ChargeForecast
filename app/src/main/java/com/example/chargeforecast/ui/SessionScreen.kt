@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BatteryChargingFull
+import androidx.compose.material.icons.filled.BatteryFull
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
@@ -44,24 +45,7 @@ fun SessionScreen(
     ) {
         val snapshot = state.snapshot
         if (snapshot == null || !state.isPlugged) {
-            Icon(
-                imageVector = Icons.Filled.BatteryChargingFull,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(ChargeDimens.HeroIconSize)
-            )
-            Text(
-                text = stringResource(R.string.session_not_charging_title),
-                style = MaterialTheme.typography.headlineLarge,
-                color = MaterialTheme.colorScheme.onBackground,
-                textAlign = TextAlign.Center
-            )
-            Text(
-                text = stringResource(R.string.session_not_charging_desc),
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center
-            )
+            DischargeScreen(state)
             return
         }
 
@@ -137,6 +121,119 @@ fun SessionScreen(
                 }
             }
         }
+    }
+}
+
+// Экран в режиме разряда: оценка оставшейся работы и её входные величины —
+// средний ток и наблюдённое время внутри окна. Без этих величин число
+// нечем проверить (спека discharge-estimate, «Оценка объяснима»).
+@Composable
+private fun DischargeScreen(state: SessionState) {
+    val context = LocalContext.current
+    val estimate = state.discharge
+    val hasEstimate = estimate.collecting || estimate.remainingSec != null
+
+    Icon(
+        imageVector = if (hasEstimate) {
+            Icons.Filled.BatteryFull
+        } else {
+            Icons.Filled.BatteryChargingFull
+        },
+        contentDescription = null,
+        tint = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.size(ChargeDimens.HeroIconSize)
+    )
+    state.snapshot?.let { snapshot ->
+        Text(
+            text = stringResource(R.string.session_level, snapshot.levelPct),
+            style = MaterialTheme.typography.displayLarge,
+            color = MaterialTheme.colorScheme.onBackground
+        )
+    }
+
+    if (!hasEstimate) {
+        // Оценщик выключен (консервативный режим) — прежняя заглушка.
+        Text(
+            text = stringResource(R.string.session_not_charging_title),
+            style = MaterialTheme.typography.headlineLarge,
+            color = MaterialTheme.colorScheme.onBackground,
+            textAlign = TextAlign.Center
+        )
+        Text(
+            text = stringResource(R.string.session_not_charging_desc),
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center
+        )
+        return
+    }
+
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant
+        ),
+        shape = RoundedCornerShape(ChargeDimens.CardCorner)
+    ) {
+        Column(
+            modifier = Modifier.padding(ChargeDimens.CardPadding),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(ChargeDimens.GapSmall)
+        ) {
+            val remainingSec = estimate.remainingSec
+            if (remainingSec != null) {
+                // Приблизительность обозначена честно: «≈» — расход
+                // зависит от будущего использования.
+                Text(
+                    text = stringResource(
+                        R.string.session_discharge_remaining,
+                        ForecastText.formatRemaining(context, remainingSec)
+                    ),
+                    style = MaterialTheme.typography.headlineLarge,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            } else {
+                Text(
+                    text = stringResource(R.string.session_discharge_collecting),
+                    style = MaterialTheme.typography.titleLarge,
+                    color = MaterialTheme.colorScheme.onBackground
+                )
+            }
+
+            // Входные величины оценки — всегда на виду.
+            Text(
+                text = averageText(estimate.averageCurrentUa),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = stringResource(
+                    R.string.session_discharge_tracked,
+                    ForecastText.formatHoursMinutes(context, estimate.trackedMs)
+                ),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (estimate.collecting) {
+                Text(
+                    text = stringResource(R.string.session_discharge_collecting_hint),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun averageText(averageUa: Float?): String {
+    if (averageUa == null) return stringResource(R.string.session_discharge_avg_pending)
+    return if (averageUa >= 1000f) {
+        stringResource(
+            R.string.session_discharge_avg_a,
+            String.format(java.util.Locale.US, "%.1f", averageUa / 1000f)
+        )
+    } else {
+        stringResource(R.string.session_discharge_avg_ma, averageUa.toInt())
     }
 }
 

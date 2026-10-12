@@ -3,6 +3,7 @@ package com.example.chargeforecast
 import android.app.Application
 import com.example.chargeforecast.battery.BatteryMonitor
 import com.example.chargeforecast.forecast.DischargeEstimator
+import com.example.chargeforecast.forecast.DischargeJournal
 import com.example.chargeforecast.session.ChargeSessionMonitor
 import com.example.chargeforecast.session.SessionCache
 import com.example.chargeforecast.widget.BatteryWidgetUpdater
@@ -11,6 +12,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import java.io.File
 
 // Ручной DI: один монитор сессии на процесс для экрана, сервиса и виджета.
 // Application.onCreate() выполняется при старте любого компонента —
@@ -33,13 +35,20 @@ class ChargeForecastApplication : Application() {
     lateinit var dischargeEstimator: DischargeEstimator
         private set
 
+    // Журнал наблюдений: что видел датчик и что вышло в окне — выгрузка
+    // через adb pull для разбора «откуда 40 минут» (design D5).
+    lateinit var dischargeJournal: DischargeJournal
+        private set
+
     private lateinit var widgetUpdater: BatteryWidgetUpdater
 
     override fun onCreate() {
         super.onCreate()
         sessionCache = SessionCache.create(this)
+        dischargeJournal = DischargeJournal(File(filesDir, JOURNAL_FILE_NAME))
         dischargeEstimator = DischargeEstimator(
-            onPersist = { sessionCache.saveDischarge(it) }
+            onPersist = { sessionCache.saveDischarge(it) },
+            onObservation = dischargeJournal::onObservation
         ).also { it.restore(sessionCache.loadDischarge()) }
         batteryMonitor = BatteryMonitor(this, appScope)
         sessionMonitor = ChargeSessionMonitor(
@@ -53,7 +62,11 @@ class ChargeForecastApplication : Application() {
         // экземпляром движка на процесс (design D5, D6).
         widgetUpdater = BatteryWidgetUpdater(this)
         appScope.launch {
-            sessionMonitor.state.collect { widgetUpdater.onState(it) }
+            sessionMonitor.state.collect {
+                // Журнал подписывает строки последней оценкой движка.
+                dischargeJournal.onEstimate(it.discharge.remainingSec)
+                widgetUpdater.onState(it)
+            }
         }
     }
 
@@ -61,6 +74,10 @@ class ChargeForecastApplication : Application() {
         batteryMonitor.stop()
         appScope.cancel()
         super.onTerminate()
+    }
+
+    companion object {
+        private const val JOURNAL_FILE_NAME = "discharge-journal.txt"
     }
 }
 

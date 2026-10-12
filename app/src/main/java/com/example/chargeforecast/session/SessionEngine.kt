@@ -91,7 +91,7 @@ internal class SessionEngine(
             // заряда для виджета (режим разряда показывает, сколько осталось
             // работать). Гейт по isPlugged у экрана и виджета от этого не
             // меняется — снапшот разрядный.
-            return idle(snapshot, dischargeEstimate(snapshot))
+            return idle(snapshot, dischargeEstimate(snapshot, nowMs))
         }
         if (plugDetectedAtMs == null) {
             // Секунда ноль: кабель подключён (переход isPlugged).
@@ -228,15 +228,17 @@ internal class SessionEngine(
         }
     }
 
-    // Оценка работы из накопленного расхода. Живой ёмкости в простое
-    // нет — берём sysfs или кэш, как на зарядке до первого замера.
-    private fun dischargeEstimate(snapshot: BatterySnapshot): DischargeEstimate {
+    // Оценка работы из окна наблюдений. Живой ёмкости в простое нет —
+    // берём sysfs или кэш, как на зарядке до первого замера. В оценку
+    // идут средний ток и наблюдённое время внутри окна — их же видит
+    // экран и журнал (спека discharge-estimate, «Оценка объяснима»).
+    private fun dischargeEstimate(snapshot: BatterySnapshot, nowMs: Long): DischargeEstimate {
         val estimator = dischargeEstimator ?: return DischargeEstimate.NONE
         val capacityUah = sysfsCapacityUah() ?: cache?.loadCapacity()
         val remainingUah = capacityUah?.let { cap ->
             snapshot.chargeCounterUah?.let { counter -> cap - counter }
         }
-        return estimator.estimate(remainingUah)
+        return estimator.estimate(remainingUah, nowMs)
     }
 
     private fun idle(

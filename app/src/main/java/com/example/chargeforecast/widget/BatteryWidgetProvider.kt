@@ -7,6 +7,7 @@ import android.appwidget.AppWidgetProvider
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.os.Bundle
 import android.view.View
 import android.widget.RemoteViews
 import com.example.chargeforecast.ChargeForecastApplication
@@ -35,18 +36,55 @@ class BatteryWidgetProvider : AppWidgetProvider() {
         pushAll(context, currentModel(context))
     }
 
+    // Смена размера ячейки на домашнем экране перерисовывает содержимое
+    // под новый бакет (design D7): без этого ресайз менял бы только рамку.
+    override fun onAppWidgetOptionsChanged(
+        context: Context,
+        appWidgetManager: AppWidgetManager,
+        appWidgetId: Int,
+        newOptions: Bundle
+    ) {
+        updateWidget(context, appWidgetManager, appWidgetId, currentModel(context))
+    }
+
     companion object {
 
-        // Толкнуть состояние во все ячейки виджета.
+        // Толкнуть состояние во все ячейки виджета — каждую по её бакету.
         fun pushAll(context: Context, model: WidgetModel) {
             val manager = AppWidgetManager.getInstance(context)
             val ids = manager.getAppWidgetIds(
                 ComponentName(context, BatteryWidgetProvider::class.java)
             )
             if (ids.isEmpty()) return
-            val views = render(context, model)
-            ids.forEach { id -> manager.updateAppWidget(id, views) }
+            ids.forEach { id -> updateWidget(context, manager, id, model) }
         }
+
+        // Одна ячейка: бакет по фактическому dp-размеру → своя раскладка.
+        // Два виджета разного размера живут одним состоянием, но разными
+        // картинками (спека battery-widget, «адаптивная раскладка»).
+        fun updateWidget(
+            context: Context,
+            manager: AppWidgetManager,
+            id: Int,
+            model: WidgetModel
+        ) {
+            manager.updateAppWidget(id, render(context, model, bucketOf(manager, id)))
+        }
+
+        // dp-размер ячейки из её опций. 0 — размер ещё не известен
+        // (ячейка только ставится): привычный средний бакет. Ключи —
+        // значения AppWidgetManager.OPTION_APPWIDGET_{WIDTH,HEIGHT} (API 31),
+        // константы в стабах SDK недоступны — пишем буквами.
+        private fun bucketOf(manager: AppWidgetManager, id: Int): WidgetSize {
+            val options = manager.getAppWidgetOptions(id)
+            val widthDp = options.getInt(OPTION_WIDTH_KEY)
+            val heightDp = options.getInt(OPTION_HEIGHT_KEY)
+            if (widthDp <= 0 || heightDp <= 0) return WidgetSize.MEDIUM
+            return WidgetText.sizeBucket(widthDp, heightDp)
+        }
+
+        private const val OPTION_WIDTH_KEY = "appWidgetWidth"
+        private const val OPTION_HEIGHT_KEY = "appWidgetHeight"
 
         // Модель по текущему состоянию процесса — без ожидания событий.
         fun currentModel(context: Context): WidgetModel {
@@ -69,8 +107,23 @@ class BatteryWidgetProvider : AppWidgetProvider() {
             false
         }
 
-        private fun render(context: Context, model: WidgetModel): RemoteViews =
-            RemoteViews(context.packageName, R.layout.widget_battery).apply {
+        private fun render(
+            context: Context,
+            model: WidgetModel,
+            bucket: WidgetSize
+        ): RemoteViews = when (bucket) {
+            WidgetSize.NARROW -> renderNarrow(context, model)
+            WidgetSize.WIDE -> renderStacked(context, model, R.layout.widget_battery_wide)
+            WidgetSize.MEDIUM -> renderStacked(context, model, R.layout.widget_battery)
+        }
+
+        // Средний и широкий бакеты: три строки, свои кегли в раскладке.
+        private fun renderStacked(
+            context: Context,
+            model: WidgetModel,
+            layoutRes: Int
+        ): RemoteViews =
+            RemoteViews(context.packageName, layoutRes).apply {
                 setTextViewText(R.id.widget_title, title(context, model))
 
                 val time = time(context, model)
@@ -97,6 +150,43 @@ class BatteryWidgetProvider : AppWidgetProvider() {
                 // Тап по виджету открывает экран сессии — полный контекст,
                 // который одну строку вместить не может (спека battery-widget).
                 setOnClickPendingIntent(R.id.widget_root, openAppIntent(context))
+            }
+
+        // Узкий бакет: одна строка — уровень, время, короткая подпись.
+        // Полные подписи здесь обрезались бы, поэтому состояния сокращены.
+        private fun renderNarrow(context: Context, model: WidgetModel): RemoteViews =
+            RemoteViews(context.packageName, R.layout.widget_battery_narrow).apply {
+                val level = model.levelPct
+                if (level == null) {
+                    setViewVisibility(R.id.widget_level, View.GONE)
+                } else {
+                    setViewVisibility(R.id.widget_level, View.VISIBLE)
+                    setTextViewText(R.id.widget_level, context.getString(R.string.session_level, level))
+                }
+
+                val time = time(context, model)
+                if (time == null) {
+                    setViewVisibility(R.id.widget_time, View.GONE)
+                } else {
+                    setViewVisibility(R.id.widget_time, View.VISIBLE)
+                    setTextViewText(
+                        R.id.widget_time,
+                        if (model.approximate) context.getString(R.string.approx_marker, time) else time
+                    )
+                }
+
+                setTextViewText(R.id.widget_title, shortTitle(context, model))
+                setOnClickPendingIntent(R.id.widget_root, openAppIntent(context))
+            }
+
+        private fun shortTitle(context: Context, model: WidgetModel): String =
+            when (model.mode) {
+                WidgetMode.CHARGING -> context.getString(R.string.widget_short_charging)
+                WidgetMode.FULL -> context.getString(R.string.widget_short_full)
+                WidgetMode.DISCHARGE -> context.getString(R.string.widget_short_discharge)
+                WidgetMode.COLLECTING -> context.getString(R.string.widget_short_collecting)
+                WidgetMode.NOT_TRACKING -> context.getString(R.string.widget_short_not_tracking)
+                WidgetMode.NO_DATA -> context.getString(R.string.widget_short_no_data)
             }
 
         private fun title(context: Context, model: WidgetModel): String =

@@ -7,6 +7,7 @@ import com.example.chargeforecast.forecast.DischargeEstimate
 import com.example.chargeforecast.forecast.ForecastAccuracy
 import com.example.chargeforecast.session.SessionState
 import com.example.chargeforecast.widget.WidgetMode
+import com.example.chargeforecast.widget.WidgetSize
 import com.example.chargeforecast.widget.WidgetText
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -164,5 +165,31 @@ class WidgetTextTest {
         assertEquals(WidgetMode.NO_DATA, model.mode)
         assertNull(model.remainingSec)
         assertNull(model.levelPct)
+    }
+
+    @Test
+    fun sizeBucket_picksNarrowStrip_forOneRowCell() {
+        // Полоса 1×3: ширина ячейки привычная, высота — одна строка.
+        assertEquals(WidgetSize.NARROW, WidgetText.sizeBucket(210, 80))
+        // Низкая, но широкая ячейка тоже узкая: три строки не влезают по высоте.
+        assertEquals(WidgetSize.NARROW, WidgetText.sizeBucket(400, 80))
+        // Очень узкая ячейка — тоже полоса, там нет места даже строке.
+        assertEquals(WidgetSize.NARROW, WidgetText.sizeBucket(130, 200))
+    }
+
+    @Test
+    fun sizeBucket_keepsMedium_forTypicalCell() {
+        // Привычный 3×2 (180×110 dp и крупнее) — средний бакет.
+        assertEquals(WidgetSize.MEDIUM, WidgetText.sizeBucket(180, 110))
+        assertEquals(WidgetSize.MEDIUM, WidgetText.sizeBucket(320, 170))
+    }
+
+    @Test
+    fun sizeBucket_picksWide_forLargeField() {
+        // Широкое/высокое поле — крупные кегли.
+        assertEquals(WidgetSize.WIDE, WidgetText.sizeBucket(340, 180))
+        assertEquals(WidgetSize.WIDE, WidgetText.sizeBucket(420, 300))
+        // Широко, но низко — не wide: место есть только по одной оси.
+        assertEquals(WidgetSize.MEDIUM, WidgetText.sizeBucket(420, 140))
     }
 }

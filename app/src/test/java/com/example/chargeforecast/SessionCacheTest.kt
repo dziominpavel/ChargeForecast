@@ -1,6 +1,7 @@
 package com.example.chargeforecast
 
 import com.example.chargeforecast.battery.ChargeType
+import com.example.chargeforecast.forecast.DischargeSample
 import com.example.chargeforecast.forecast.DischargeState
 import com.example.chargeforecast.session.SessionCache
 import com.example.chargeforecast.session.SessionSummary
@@ -161,13 +162,17 @@ class SessionCacheTest {
 
     @Test
     fun discharge_roundTrip() {
+        // Кольцо интервалов окна переживает запись и чтение целиком —
+        // оценка продолжается от прежней базы, а не с нуля.
         val cache = SessionCache(FakeSharedPreferences())
         assertNull(cache.loadDischarge())
         val state = DischargeState(
-            smoothedCurrentUa = 412_500f,
+            samples = listOf(
+                DischargeSample(atMs = 8_100_000L, durationMs = 900_000L, dischargedUah = 100_000L),
+                DischargeSample(atMs = 9_000_000L, durationMs = 900_000L, dischargedUah = 95_000L)
+            ),
             lastSampleMs = 9_000_000L,
-            lastCounterUah = 1_840_000L,
-            trackedMs = 7_200_000L
+            lastCounterUah = 1_840_000L
         )
         cache.saveDischarge(state)
         assertEquals(state, cache.loadDischarge())
@@ -176,35 +181,70 @@ class SessionCacheTest {
     @Test
     fun discharge_survivesProcessKill() {
         // OEM-оболочка убила процесс: SharedPreferences — тот же файл, но
-        // экземпляры кэша новые. Накопитель восстановлен, база прежняя.
+        // экземпляры кэша новые. Накопление восстановлено, база прежняя.
         val prefs = FakeSharedPreferences()
         SessionCache(prefs).saveDischarge(
-            DischargeState(400_000f, 1_500_000L, 2_000_000L, 3_600_000L)
+            DischargeState(
+                samples = listOf(
+                    DischargeSample(atMs = 1_500_000L, durationMs = 1_500_000L, dischargedUah = 120_000L)
+                ),
+                lastSampleMs = 1_500_000L,
+                lastCounterUah = 2_000_000L
+            )
         )
         val restored = SessionCache(prefs).loadDischarge()!!
-        assertEquals(400_000f, restored.smoothedCurrentUa)
         assertEquals(1_500_000L, restored.lastSampleMs)
         assertEquals(2_000_000L, restored.lastCounterUah)
-        assertEquals(3_600_000L, restored.trackedMs)
+        assertEquals(1, restored.samples.size)
+        assertEquals(120_000L, restored.samples.first().dischargedUah)
     }
 
     @Test
-    fun discharge_nullFieldsAreNotConfusedWithValues() {
-        // Отсутствующие поля не превращаются в нули: null и 0 — разное.
+    fun discharge_emptyWindowAndNullAnchors_areNotConfusedWithValues() {
+        // Пустое окно и null-якоря — не нули: null и 0 разное.
         val cache = SessionCache(FakeSharedPreferences())
-        cache.saveDischarge(DischargeState(null, null, null, 0L))
+        cache.saveDischarge(DischargeState(emptyList(), null, null))
         val loaded = cache.loadDischarge()!!
-        assertNull(loaded.smoothedCurrentUa)
+        assertEquals(emptyList<DischargeSample>(), loaded.samples)
         assertNull(loaded.lastSampleMs)
         assertNull(loaded.lastCounterUah)
-        assertEquals(0L, loaded.trackedMs)
+    }
+
+    @Test
+    fun discharge_oldScalarKeysIgnored() {
+        // Прежние четыре скаляра накопителя не читаются: окно начинается
+        // пустым, а не с устаревшего сглаженного тока (design D9).
+        val prefs = FakeSharedPreferences()
+        prefs.edit()
+            .putFloat("discharge_smoothed_ua", 412_500f)
+            .putLong("discharge_tracked_ms", 7_200_000L)
+            .putLong("discharge_last_sample_ms", 1_500_000L)
+            .putLong("discharge_last_counter_uah", 2_000_000L)
+            .apply()
+        assertNull(SessionCache(prefs).loadDischarge())
+    }
+
+    @Test
+    fun discharge_corruptSampleStringDecodesToEmpty() {
+        // Повреждённая строка не роняет приложение и не даёт ложных
+        // интервалов: интервалы просто отсутствуют.
+        val prefs = FakeSharedPreferences()
+        prefs.edit().putString("discharge_samples_v2", "broken:entry;12:xx:34").apply()
+        val loaded = SessionCache(prefs).loadDischarge()!!
+        assertEquals(emptyList<DischargeSample>(), loaded.samples)
     }
 
     @Test
     fun discharge_notTouchedByOtherCacheWrites() {
-        // Сводка, ёмкость и кривые не затирают накопитель расхода.
+        // Сводка, ёмкость и кривые не затирают накопление расхода.
         val cache = SessionCache(FakeSharedPreferences())
-        val state = DischargeState(400_000f, 1_500_000L, 2_000_000L, 3_600_000L)
+        val state = DischargeState(
+            samples = listOf(
+                DischargeSample(atMs = 1_500_000L, durationMs = 1_500_000L, dischargedUah = 120_000L)
+            ),
+            lastSampleMs = 1_500_000L,
+            lastCounterUah = 2_000_000L
+        )
         cache.saveDischarge(state)
         cache.saveSummary(summary())
         cache.saveCapacity(4_000_000L)

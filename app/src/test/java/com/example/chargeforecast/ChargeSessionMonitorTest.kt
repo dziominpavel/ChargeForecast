@@ -106,8 +106,10 @@ class ChargeSessionMonitorTest {
         snapshots.value = snap(0L, 70, plugged = false)
         val first = await(monitor) { it.snapshot?.levelPct == 70 }
 
-        // Час простоя без новых замеров: состояние остаётся прежним.
-        nowMs = 3_600_000L
+        // Два с лишним часа простоя без новых замеров: состояние остаётся
+        // прежним. Столько же нужно, чтобы накопилось 2 часа наблюдаемого
+        // времени — порог входа в оценку (спека discharge-estimate).
+        nowMs = 7_500_000L
         Thread.sleep(50)
         assertEquals(
             "простой не должен будить состояние само по себе",

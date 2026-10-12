@@ -17,14 +17,6 @@ import androidx.core.content.ContextCompat
 import com.example.chargeforecast.ChargeForecastApplication
 import com.example.chargeforecast.MainActivity
 import com.example.chargeforecast.R
-import com.example.chargeforecast.session.ChargeSessionMonitor
-import com.example.chargeforecast.session.SessionState
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.launch
 
 // Постоянный сервис слежения за зарядкой (design D3, D5).
 //
@@ -36,21 +28,13 @@ import kotlinx.coroutines.launch
 //
 // Владельцы состояния — в Application (design D6): сервис лишь читает
 // тот же экземпляр движка, что экран и виджет. Второго движка нет.
+// Состояние сервис наружу не отражает: уведомление статично (design D8).
 class ChargeForecastService : Service() {
 
-    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    private var stateJob: Job? = null
     private var powerReceiver: BroadcastReceiver? = null
-
-    // Текст уведомления меняется только при переходе режима — тик раз в
-    // секунду наружу не публикуем, уведомление служебное.
-    private var lastNotificationTextRes: Int = R.string.notification_tracking_active
 
     private val app: ChargeForecastApplication
         get() = application as ChargeForecastApplication
-
-    private val monitor: ChargeSessionMonitor
-        get() = app.sessionMonitor
 
     override fun onCreate() {
         super.onCreate()
@@ -59,18 +43,16 @@ class ChargeForecastService : Service() {
         // startForeground() — иначе крэш. Поэтому сразу в onCreate().
         // Тип указываем явно: с API 34 специальный FGS требует его
         // подтверждения, ServiceCompat на старых версиях его игнорирует.
+        // Текст уведомления один на всё время жизни сервиса (design D8):
+        // смена состояния зарядки шторку не трогает. Прогрев состояния
+        // остаётся в Application — там же подписчики (экран, виджет, журнал).
         ServiceCompat.startForeground(
             this,
             NOTIFICATION_ID,
-            buildNotification(lastNotificationTextRes),
+            buildNotification(),
             ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
         )
         registerPowerReceiver()
-        // Держим состояние живым и отражаем его наружу. Сбор — единственный
-        // способ не дать процессу уснуть до следующего broadcast.
-        stateJob = serviceScope.launch {
-            monitor.state.collect { publishNotification(it) }
-        }
     }
 
     // START_STICKY: если оболочка всё же выгрузит процесс — система
@@ -88,8 +70,6 @@ class ChargeForecastService : Service() {
             }
         }
         powerReceiver = null
-        stateJob?.cancel()
-        serviceScope.cancel()
         super.onDestroy()
     }
 
@@ -120,26 +100,18 @@ class ChargeForecastService : Service() {
         powerReceiver = receiver
     }
 
-    private fun publishNotification(state: SessionState) {
-        val textRes = when {
-            state.isPlugged && state.forecast.isFull -> R.string.notification_full
-            state.isPlugged -> R.string.notification_charging
-            else -> R.string.notification_tracking_active
-        }
-        if (textRes == lastNotificationTextRes) return
-        lastNotificationTextRes = textRes
-        // Отказ POST_NOTIFICATIONS — тихо ничего не показываем: сервис
-        // продолжает работать, экран и виджет состояние получают.
-        notificationManager.notify(NOTIFICATION_ID, buildNotification(textRes))
-    }
-
     private fun createNotificationChannel() {
-        if (notificationManager.getNotificationChannel(CHANNEL_ID) != null) return
-        notificationManager.createNotificationChannel(
+        val manager = notificationManager
+        val existing = manager.getNotificationChannel(CHANNEL_ID)
+        // Важность канала после создания не меняется — для отката (design
+        // D8) канал пересоздаётся: старый удаляется, важность новая.
+        if (existing != null && existing.importance == CHANNEL_IMPORTANCE) return
+        if (existing != null) manager.deleteNotificationChannel(CHANNEL_ID)
+        manager.createNotificationChannel(
             NotificationChannel(
                 CHANNEL_ID,
                 getString(R.string.notification_channel_tracking),
-                NotificationManager.IMPORTANCE_MIN
+                CHANNEL_IMPORTANCE
             ).apply {
                 description = getString(R.string.notification_channel_tracking_desc)
                 setShowBadge(false)
@@ -151,11 +123,11 @@ class ChargeForecastService : Service() {
         )
     }
 
-    private fun buildNotification(textRes: Int): Notification =
+    private fun buildNotification(): Notification =
         NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_charge)
             .setContentTitle(getString(R.string.app_name))
-            .setContentText(getString(textRes))
+            .setContentText(getString(R.string.notification_tracking_active))
             .setContentIntent(openAppIntent())
             // ongoing: не смахивается пользователем — сервис жив, пока
             // не выгрузится сам.
@@ -184,6 +156,13 @@ class ChargeForecastService : Service() {
     companion object {
         private const val CHANNEL_ID = "charge_tracking"
         private const val NOTIFICATION_ID = 4210
+
+        // Канал без возможности показа (design D8): сервис остаётся
+        // foreground, уведомление пользователю не показывается. Если на
+        // устройстве это мешает слежению (оболочка убьёт сервис или
+        // выведет своё служебное уведомление) — по чек-листу D8 значение
+        // возвращается к IMPORTANCE_MIN: откат одной строкой.
+        private const val CHANNEL_IMPORTANCE = NotificationManager.IMPORTANCE_NONE
 
         // Поднять слежение. Вызывается при открытии приложения и после
         // перезагрузки. Старт из фона с API 31+ бросает
