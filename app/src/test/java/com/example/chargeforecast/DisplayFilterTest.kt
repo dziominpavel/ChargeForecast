@@ -7,26 +7,67 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.random.Random
 
-// Фильтр показа: каждый тик — новое значение в секундах (без корзин),
-// сглаживание EMA tau=10 с, защита только от мусорных всплесков вверх.
+// Фильтр показа: якорный отсчёт (показ = якорь − время, между
+// коррекциями минус секунда за секунду), сглаживание EMA tau=10 с,
+// коррекции якоря — скольжением в обе стороны, вверх только через
+// подтверждённый пересмотр (рывок +25%/3 тика или тренд долгого окна).
 class DisplayFilterTest {
 
     @Test
     fun firstDisplay_roundsRawToSeconds() {
-        val filter = DisplayFilter()
         // Первое значение принимается как есть, округлённо до секунд.
+        val filter = DisplayFilter()
         assertEquals(2967L, filter.update(2967.4f, 0L))
-        assertEquals(0L, filter.update(0.4f, 0L))
+        // Полная зарядка — ноль мгновенно, без дотухания.
+        assertEquals(0L, DisplayFilter().update(0f, 0L))
     }
 
     @Test
-    fun downFree_smallUpwardNoiseDoesNotStick() {
-        // Вниз — свободно, каждый тик.
+    fun downSlides_notJumps() {
+        // Падение модели расходится скольжением, а не прыжком одним кадром
+        // (спека-дельта: «вниз — скольжением» вместо прежнего «вниз свободно»).
+        val filter = DisplayFilter()
+        assertEquals(3600L, filter.update(3600.0f, 0L))
+        // Модель обвалилась до 2400 (-33%): первый шаг ограничен долей.
+        var prev = 3600L
+        var maxStep = 0L
+        var t = 1_000L
+        while (t <= 120_000L) {
+            val out = filter.update(2400.0f, t)!!
+            val step = prev - out
+            assertTrue("шаг вниз не может быть прыжком: $prev → $out", step <= prev / 4)
+            if (step > maxStep) maxStep = step
+            prev = out
+            t += 1_000L
+        }
+        assertTrue("скольжение не сошлось к модели: $prev", kotlin.math.abs(prev - 2400L) <= 3L)
+    }
+
+    @Test
+    fun frozenRaw_displayedTicksDownOneSecondPerSecond() {
+        // Сырая оценка застыла на константе (квантование уровня, замерший
+        // счётчик) — показанный всё равно убывает ровно на секунду за
+        // секунду: это арифметика «якорь минус время», а не пересчёт.
+        val filter = DisplayFilter()
+        var prev = filter.update(3600.0f, 0L)!!
+        var t = 1_000L
+        while (t <= 120_000L) {
+            val out = filter.update(3600.0f, t)!!
+            assertEquals("каждый тик минус ровно секунда", prev - 1, out)
+            prev = out
+            t += 1_000L
+        }
+        assertEquals(3480L, prev)
+    }
+
+    @Test
+    fun downSlide_smallUpwardNoiseDoesNotStick() {
+        // Небольшой шум вверх гаснет: показанное не растёт, продолжает
+        // свой ход; движение модели вниз — скольжением.
         val filter = DisplayFilter()
         assertEquals(2967L, filter.update(2967.4f, 0L))
         val down = filter.update(2900.0f, 1_000L)
-        assertTrue("вниз должно идти свободно: $down", down!! < 2967L)
-        // Небольшой шум вверх гаснет: показанное не растёт.
+        assertTrue("вниз должен идти скольжением: $down", down!! < 2967L)
         val noisy = filter.update(3200.0f, 2_000L)
         assertTrue("шум вверх просочился: $noisy", noisy!! <= down!!)
     }
@@ -61,36 +102,46 @@ class DisplayFilterTest {
     }
 
     @Test
-    fun ratchet_modelRevisionAfterStableTicks_accepted() {
-        // Устойчивый пересмотр >25% три тика подряд — вверх можно.
+    fun ratchet_modelRevisionAfterStableTicks_glidesUpInSteps() {
+        // Устойчивый пересмотр >25% три тика подряд открывает движение
+        // якоря вверх; дальше якорь сходится к модели скольжением —
+        // каждый шаг ограничен, финал у модели.
         val filter = DisplayFilter()
         assertEquals(1200L, filter.update(1200.0f, 0L))
-        // Тот же момент времени: EMA равна сырому значению, кандидат
-        // стабилен и выше порога +25% — на третьем тике принимаем.
         var out = 0L
+        var prev = 1200L
         repeat(3) {
             out = filter.update(2000.0f, 0L)!!
         }
-        assertEquals(2000L, out)
+        assertTrue("подтверждённый пересмотр должен начать движение вверх", out > prev)
+        prev = out
+        var t = 1_000L
+        while (t <= 60_000L) {
+            out = filter.update(2000.0f, t)!!
+            assertTrue("рывок вверх: $prev → $out", out <= prev + prev / 4)
+            prev = out
+            t += 1_000L
+        }
+        assertTrue("якорь не сошёлся к модели: $prev", kotlin.math.abs(prev - 2000L) <= 3L)
     }
 
     @Test
     fun displayedDecaysWithTime_evenWhenNoNewData() {
-        // Данные кончились (null) — показанное продолжает убывать.
+        // Данные кончились (null) — якорь не трогаем, отсчёт продолжает
+        // убывать по времени.
         val filter = DisplayFilter()
         assertEquals(1200L, filter.update(1200.0f, 0L))
         val after = filter.update(null, 120_000L)!!
-        assertTrue("показанное должно убывать со временем: $after", after < 1200L)
+        assertEquals("показанное убывает по секундам: $after", 1080L, after)
     }
 
     @Test
     fun trendSmoothRevision_displayedRisesInSmallSteps_noSawtooth() {
         // Задача 3.2, сценарий спеки «Плавный переход без пилы»: модель
         // ревидирует остаток вверх ровно со скоростью смеси (~2.7 сек/сек)
-        // 180 секунд. Показанный не падает ни на одном тике (пауза в
-        // ожидании тренда допустима, ложное падение — нет), после
-        // открытия тренда растёт каждым тиком, каждый шаг ≤25%, финал ≈
-        // сырому.
+        // 180 секунд. До открытия тренда показанный идёт своим отсчётом
+        // (минус секунда за секунду — пауза, а не заморозка); после
+        // открытия растёт каждым тиком, каждый шаг ≤25%, финал ≈ сырому.
         // Константа шумового порога зафиксирована парой с property-тестом.
         assertEquals(40f, DisplayFilter.TREND_NOISE_FLOOR_SEC)
         val filter = DisplayFilter()
@@ -103,10 +154,20 @@ class DisplayFilterTest {
             val output = filter.update(raw, t)
             val previous = prev
             if (output != null && previous != null) {
-                assertTrue(
-                    "ложное падение $previous → $output на ${t / 1000}с",
-                    output >= previous
-                )
+                if (firstRiseAtMs == null) {
+                    // До открытия тренда допустим только отсчёт (−1/тик)
+                    // и держание значения, но не падение быстрее секунды.
+                    assertTrue(
+                        "падение быстрее отсчёта $previous → $output на ${t / 1000}с",
+                        output >= previous - 1
+                    )
+                } else {
+                    assertTrue(
+                        "ложное падение после открытия тренда " +
+                            "$previous → $output на ${t / 1000}с",
+                        output >= previous
+                    )
+                }
                 if (output > previous) {
                     if (firstRiseAtMs == null) {
                         firstRiseAtMs = t
@@ -186,5 +247,14 @@ class DisplayFilterTest {
                 "$shownJustAfterSpike → $last",
             last < shownJustAfterSpike!!
         )
+    }
+
+    @Test
+    fun glideConstants_arePinnedForDeviceCalibration() {
+        // Константы скольжения закреплены парой с тестами анти-пилы и
+        // схождения — калибровать на устройстве только парой.
+        assertEquals(3f, DisplayFilter.CORRECTION_ENTER_SEC)
+        assertEquals(0.2f, DisplayFilter.SLEW_FRACTION)
+        assertEquals(2f, DisplayFilter.SLEW_MIN_STEP_SEC)
     }
 }

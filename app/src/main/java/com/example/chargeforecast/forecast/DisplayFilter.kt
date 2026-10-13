@@ -1,19 +1,29 @@
 package com.example.chargeforecast.forecast
 
+import kotlin.math.abs
 import kotlin.math.exp
+import kotlin.math.min
+import kotlin.math.max
 import kotlin.math.roundToLong
 
-// Фильтр показа: EMA сырой остаток (tau=10 с) и округление до секунд.
-// Каждый тик — новое значение, без корзин. Два пути пересмотра вверх:
+// Фильтр показа: EMA сырой остатка (tau=10 с) и якорный отсчёт.
+// Показанный остаток — «якорь минус прошедшее время»: между коррекциями
+// модели он убывает ровно на секунду за секунду, как настоящие часы,
+// даже если сырая оценка застыла (квантование уровня, замерший счётчик).
+// Коррекция якоря — скольжение, а не прыжок: расхождение с моделью
+// разъезжается шагами `min(расхождение, max(SLEW_MIN_STEP_SEC,
+// расхождение × SLEW_FRACTION))` в обе стороны — вниз так же плавно,
+// как вверх (спека-дельта: прежнее «вниз свободно» заменено скольжением).
+// Два пути пересмотра вверх (гейт направления — якорь вверх двигается
+// только через подтверждённый пересмотр):
 // 1. Рывок: рост более 25% принимается, если держится 3 тика подряд.
 // 2. Тренд (D6): медленная EMA (tau=60 с) выросла относительно значения
 //    минуту назад больше чем на TREND_NOISE_FLOOR_SEC и условие держится
-//    TREND_TICKS тика подряд → кандидат принимается каждым тиком
-//    (плавный пересмотр модели вверх идёт мелкими шагами, без пилы).
-// Пока путь не открыт, кандидат выше показанного НЕ опускает показанное
-// (держим значение) — спека «без ложных падений»: пауза в ожидании
-// тренда лучше, чем падение вслед за растущей моделью.
-// Вниз — всегда свободно; полный заряд (raw = 0) принимается мгновенно.
+//    TREND_TICKS тика подряд → кандидат принимается каждым тиком.
+// Пока путь не открыт, кандидат выше показанного якорь не двигает
+// («без ложных подъёмов»): показанный продолжает свой отсчёт по времени.
+// Показ привязан к секундной сетке вызывающей стороны (ChargeSessionMonitor):
+// каждый вызов update — один тик отсчёта.
 // Чистый класс — тестируем на JVM.
 class DisplayFilter(
     private val emaTauMs: Long = EMA_TAU_MS
@@ -24,8 +34,10 @@ class DisplayFilter(
     private val trendHistory = ArrayDeque<Pair<Long, Float>>()
     private var trendTicks = 0
     private var lastUpdateMs: Long? = null
-    private var displayedSec: Float? = null
-    private var displayedAtMs: Long? = null
+    // Якорь показа: значение остатка в секундах и метка, от которой оно
+    // отсчитывается по времени. Показ = якорь − (now − anchorAtMs).
+    private var anchorSec: Float? = null
+    private var anchorAtMs: Long? = null
     private var reviewTicks = 0
 
     // rawRemainingSec — сырая оценка остатка в секундах.
@@ -43,11 +55,11 @@ class DisplayFilter(
             trendHistory.clear()
             trendHistory.addLast(nowMs to 0f)
             trendTicks = 0
-            accept(0L, nowMs)
+            setAnchor(0f, nowMs)
             return 0L
         }
         emaSec = if (rawRemainingSec == null) {
-            // Нет данных — держим EMA: показанное продолжает убывать.
+            // Нет данных — держим EMA: показанный продолжает убывать.
             emaSec
         } else {
             val prev = emaSec
@@ -81,7 +93,7 @@ class DisplayFilter(
                 if (ts <= cutoff) refSec = v else break
             }
             // Держим только «самую свежую точку не новее cutoff» + более
-            // свежие — старые для разности больше не нужны.
+            // свежие — старые для разности больше нужны.
             while (trendHistory.size > 1 && trendHistory[1].first <= cutoff) {
                 trendHistory.removeFirst()
             }
@@ -90,68 +102,83 @@ class DisplayFilter(
         } else {
             trendTicks = 0
         }
+        val shown = shownNow(nowMs)
+        if (shown == null || shown <= 0f) {
+            // Первый показ или исчерпанный якорь при живой модели —
+            // новая точка отсчёта от текущей EMA.
+            val seed = emaSec ?: return null
+            setAnchor(seed, nowMs)
+            return out(nowMs)
+        }
+        if (rawRemainingSec == null) {
+            // Данных нет — якорь не трогаем, отсчёт продолжает убывать.
+            return out(nowMs)
+        }
+        val ema = emaSec ?: return null
+        val candidate = ema.roundToLong().coerceAtLeast(0L).toFloat()
         val trendOpen = trendTicks >= TREND_TICKS
-        val shown = displayedSec
-        val shownAt = displayedAtMs
-        if (shown == null || shownAt == null || shown <= 0f) {
-            val ema = emaSec ?: return null
-            accept(ema.roundToLong().coerceAtLeast(0L), nowMs)
-        } else if (rawRemainingSec == null) {
-            // Данных нет — показанное продолжает убывать по времени.
-            val elapsedSec = (nowMs - shownAt).toFloat() / 1000f
-            displayedSec = (shown - elapsedSec).coerceAtLeast(0f)
-            displayedAtMs = nowMs
-        } else {
-            val ema = emaSec ?: return null
-            val candidate = ema.roundToLong().coerceAtLeast(0L)
-            when {
-                // Вниз — свободно. Крупное падение (граница корзин,
-                // обвал модели) обнуляет окно тренда: иначе разность
-                // «60 с назад» отравлена высокими значениями, путь
-                // тренда не откроется при росте, и рывок примет сразу
-                // больше +25% — пила вернётся.
-                candidate <= shown -> {
-                    reviewTicks = 0
-                    if (shown - candidate > TREND_RESET_DROP_SEC) {
-                        resetTrendWindow(rawRemainingSec, nowMs)
-                    }
-                    accept(candidate, nowMs)
+        when {
+            // Вниз — скольжением, всегда. Крупное падение (граница корзин,
+            // обвал модели) обнуляет окно тренда: иначе разность
+            // «60 с назад» отравлена высокими значениями, путь тренда
+            // не откроется при росте, а рывок примет сразу больше +25% —
+            // пила вернётся.
+            candidate <= shown -> {
+                reviewTicks = 0
+                if (shown - candidate > TREND_RESET_DROP_SEC) {
+                    resetTrendWindow(rawRemainingSec, nowMs)
                 }
-                // Тренд подтверждён — плавный пересмотр вверх каждым тиком.
-                trendOpen -> {
-                    accept(candidate, nowMs)
-                }
-                // Вверх рывком — только устойчивый пересмотр: кандидат
-                // держится выше порога +25% три тика подряд (одиночные
-                // всплески шума сбрасывают счётчик затуханием).
-                candidate > shown * (1f + REVIEW_FRACTION) -> {
-                    reviewTicks++
-                    if (reviewTicks >= REVIEW_TICKS) {
-                        accept(candidate, nowMs)
-                    } else {
-                        // До подтверждения показанное не опускается:
-                        // это ожидание пересмотра, а не новые данные.
-                        displayedAtMs = nowMs
-                    }
-                }
-                else -> {
-                    reviewTicks = 0
-                    // Кандидат выше показанного, но путь не открыт —
-                    // держим показанное («без ложных падений»: падение
-                    // вслед за растущей моделью запрещено спекой;
-                    // убывание по времени остаётся для ветки без данных).
-                    displayedAtMs = nowMs
+                glide(candidate, shown, nowMs)
+            }
+            // Тренд подтверждён — якорь плавно идёт за кандидатом.
+            trendOpen -> glide(candidate, shown, nowMs)
+            // Вверх рывком — только устойчивый пересмотр: кандидат
+            // держится выше порога +25% три тика подряд (одиночные
+            // всплески шума сбрасывают счётчик затуханием). До
+            // подтверждения якорь не трогается — отсчёт продолжается.
+            candidate > shown * (1f + REVIEW_FRACTION) -> {
+                reviewTicks++
+                if (reviewTicks >= REVIEW_TICKS) {
+                    glide(candidate, shown, nowMs)
                 }
             }
+            else -> {
+                reviewTicks = 0
+                // Кандидат выше показанного, но путь не открыт — якорь
+                // держим: подъём вслед за неподтверждённой моделью
+                // запрещён («без ложных подъёмов»).
+            }
         }
-        val out = displayedSec ?: return null
-        return out.roundToLong().coerceAtLeast(0L)
+        return out(nowMs)
     }
 
-    private fun accept(candidate: Long, nowMs: Long) {
-        displayedSec = candidate.toFloat()
-        displayedAtMs = nowMs
-        reviewTicks = 0
+    // Скольжение якоря к цели: в пределах порога — всплыть к цели сразу
+    // (шаг ≤ порога не заметен, а вечные микрокоррекции конфликтуют с
+    // ритмом «минус секунда»); за порогом — экспоненциальное схождение.
+    private fun glide(target: Float, shown: Float, nowMs: Long) {
+        val diff = target - shown
+        val magnitude = abs(diff)
+        if (magnitude <= CORRECTION_ENTER_SEC) {
+            setAnchor(target, nowMs)
+            return
+        }
+        val step = min(magnitude, max(SLEW_MIN_STEP_SEC, magnitude * SLEW_FRACTION))
+        setAnchor(if (diff > 0f) shown + step else shown - step, nowMs)
+    }
+
+    // Показанное значение в данный момент: якорь минус прошедшее время.
+    private fun shownNow(nowMs: Long): Float? {
+        val anchor = anchorSec ?: return null
+        val at = anchorAtMs ?: return null
+        return anchor - (nowMs - at).coerceAtLeast(0L) / 1000f
+    }
+
+    private fun out(nowMs: Long): Long? =
+        shownNow(nowMs)?.roundToLong()?.coerceAtLeast(0L)
+
+    private fun setAnchor(sec: Float, nowMs: Long) {
+        anchorSec = sec
+        anchorAtMs = nowMs
     }
 
     // Точка отсчёта тренда после крупного падения: медленная EMA и окно
@@ -169,8 +196,8 @@ class DisplayFilter(
         trendHistory.clear()
         trendTicks = 0
         lastUpdateMs = null
-        displayedSec = null
-        displayedAtMs = null
+        anchorSec = null
+        anchorAtMs = null
         reviewTicks = 0
     }
 
@@ -190,5 +217,19 @@ class DisplayFilter(
         // Падение кандидата больше этой величины — не шум, а смена
         // модели: окно тренда начинается заново.
         const val TREND_RESET_DROP_SEC = 60f
+        // Константы скольжения якоря — калибруются на устройстве автора
+        // (задача 1.4 change smooth-anchored-countdown): форма поведения
+        // (плавное схождение без прыжков) зафиксирована спекой, числа —
+        // нет. Менять только парой с тестами DisplayFilterTest.
+        // Порог входа коррекции: расхождение модели с показом в пределах
+        // него принимается целиком — микрокоррекции не спорят с ритмом
+        // «минус секунда».
+        const val CORRECTION_ENTER_SEC = 3f
+        // Доля расхождения, закрываемая за тик: крупный пересмотр
+        // разъезжается за десятки секунд, крупных шагов нет ни в одном
+        // кадре.
+        const val SLEW_FRACTION = 0.2f
+        // Шаг-пол: гарантирует движение к цели на малых расхождениях.
+        const val SLEW_MIN_STEP_SEC = 2f
     }
 }
