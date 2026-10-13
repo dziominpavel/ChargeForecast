@@ -36,11 +36,11 @@
          величины. Оценка приблизительная — показывает, из чего сложена. -->
     <string name="session_discharge_remaining">Осталось работать ≈ %1$s</string>
     <string name="session_discharge_collecting">Собираю данные о расходе</string>
-    <string name="session_discharge_collecting_hint">Оценка появится после двух часов наблюдений за разрядом.</string>
+    <string name="session_discharge_collecting_hint">Оценка появится после двух часов данных о разряде.</string>
     <string name="session_discharge_avg_ma">Средний расход за сутки: %1$d мА</string>
     <string name="session_discharge_avg_a">Средний расход за сутки: %1$s А</string>
     <string name="session_discharge_avg_pending">Средний расход пока не измерен</string>
-    <string name="session_discharge_tracked">Наблюдено %1$s из 24-часового окна</string>
+    <string name="session_discharge_tracked">Собрано %1$s из 24-часового окна</string>
 
     <!-- Фоновое слежение: канал и служебное уведомление. Канал без
          возможности показа (IMPORTANCE_NONE) — сервис остаётся foreground,

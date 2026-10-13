@@ -3,6 +3,7 @@ package com.example.chargeforecast.ui
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -176,7 +177,10 @@ private fun DischargeScreen(state: SessionState) {
     ) {
         Column(
             modifier = Modifier.padding(ChargeDimens.CardPadding),
-            horizontalAlignment = Alignment.CenterHorizontally,
+            // Левый край: каждая строка занимает свою ширину, центрирование
+            // давало «пляшущие» края. Герой экрана и карточка зарядки —
+            // по центру, как и раньше.
+            horizontalAlignment = Alignment.Start,
             verticalArrangement = Arrangement.spacedBy(ChargeDimens.GapSmall)
         ) {
             val remainingSec = estimate.remainingSec
@@ -188,12 +192,14 @@ private fun DischargeScreen(state: SessionState) {
                         R.string.session_discharge_remaining,
                         ForecastText.formatRemaining(context, remainingSec)
                     ),
+                    modifier = Modifier.fillMaxWidth(),
                     style = MaterialTheme.typography.headlineLarge,
                     color = MaterialTheme.colorScheme.primary
                 )
             } else {
                 Text(
                     text = stringResource(R.string.session_discharge_collecting),
+                    modifier = Modifier.fillMaxWidth(),
                     style = MaterialTheme.typography.titleLarge,
                     color = MaterialTheme.colorScheme.onBackground
                 )
@@ -202,6 +208,7 @@ private fun DischargeScreen(state: SessionState) {
             // Входные величины оценки — всегда на виду.
             Text(
                 text = averageText(estimate.averageCurrentUa),
+                modifier = Modifier.fillMaxWidth(),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -210,12 +217,14 @@ private fun DischargeScreen(state: SessionState) {
                     R.string.session_discharge_tracked,
                     ForecastText.formatHoursMinutes(context, estimate.trackedMs)
                 ),
+                modifier = Modifier.fillMaxWidth(),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             if (estimate.collecting) {
                 Text(
                     text = stringResource(R.string.session_discharge_collecting_hint),
+                    modifier = Modifier.fillMaxWidth(),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
