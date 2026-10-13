@@ -24,7 +24,18 @@ class BatteryWidgetUpdater(private val context: Context) {
         }
         val now = System.currentTimeMillis()
         val transition = model.mode != lastModel?.mode
-        if (!transition && now - lastPushedAtMs < MIN_UPDATE_INTERVAL_MS) {
+        // Последняя минута зарядки: секунды на виджете идут плавно —
+        // толчок раз в секунду вместо обычного троттлинга (спека
+        // battery-widget, «Секунды только в последнюю минуту»).
+        val interval = if (
+            model.mode == WidgetMode.CHARGING &&
+            (model.remainingSec ?: Long.MAX_VALUE) < LAST_MINUTE_MS
+        ) {
+            LAST_MINUTE_UPDATE_INTERVAL_MS
+        } else {
+            MIN_UPDATE_INTERVAL_MS
+        }
+        if (!transition && now - lastPushedAtMs < interval) {
             // Отсчёт устарел максимум на интервал троттлинга; следующий
             // тик доведёт его. Модель не запоминаем — тогда следующее
             // изменение всё равно пройдёт проверку.
@@ -38,5 +49,9 @@ class BatteryWidgetUpdater(private val context: Context) {
     companion object {
         // Троттлинг обычных обновлений во время зарядки (~15 с по design D5).
         const val MIN_UPDATE_INTERVAL_MS = 15_000L
+        // Граница последней минуты: остаток меньше минуты — тикаем секундами.
+        const val LAST_MINUTE_MS = 60_000L
+        // Интервал толчка в последнюю минуту — секунда.
+        const val LAST_MINUTE_UPDATE_INTERVAL_MS = 1_000L
     }
 }

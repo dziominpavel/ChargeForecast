@@ -4,8 +4,6 @@
     <!-- Экран сессии -->
     <string name="session_not_charging_title">Не на зарядке</string>
     <string name="session_not_charging_desc">Подключите кабель — здесь появятся скорость зарядки и прогноз времени до 100%.</string>
-    <string name="session_collecting">Собираю данные…</string>
-    <string name="session_measuring">Измеряю… %1$d с</string>
     <string name="session_charged">Заряжено</string>
     <string name="session_accuracy_approx">примерно</string>
     <string name="session_accuracy_precise">точно</string>
@@ -23,32 +21,26 @@
     <string name="session_live_current_a">%1$s А</string>
     <string name="session_live_voltage">%1$s В</string>
     <string name="session_live_temp">%1$s °C</string>
-    <!-- Время: остаток выдаётся каждую секунду, ч/мин/с -->
+    <!-- Время: секунды только когда осталось меньше минуты, дальше
+         минуты, часы и минуты (спека charge-forecast, «Фильтр показа») -->
     <string name="time_seconds">%1$d с</string>
-    <string name="time_minutes_seconds">%1$d мин %2$d с</string>
-    <string name="time_hours_minutes_seconds">%1$d ч %2$d мин %3$d с</string>
-    <!-- Компактная длительность без секунд (окно наблюдения) -->
     <string name="time_hours">%1$d ч</string>
     <string name="time_minutes">%1$d мин</string>
     <string name="time_hours_minutes">%1$d ч %2$d мин</string>
 
-    <!-- Блок разряда на экране: оценка оставшейся работы и её входные
-         величины. Оценка приблизительная — показывает, из чего сложена. -->
+    <!-- Блок разряда на экране: приор «полный заряд ≈ 24 ч» либо
+         измеренное среднее, с честной пометкой приблизительности. -->
     <string name="session_discharge_remaining">Осталось работать ≈ %1$s</string>
-    <string name="session_discharge_collecting">Собираю данные о расходе</string>
-    <string name="session_discharge_collecting_hint">Оценка появится после двух часов данных о разряде.</string>
     <string name="session_discharge_avg_ma">Средний расход за сутки: %1$d мА</string>
     <string name="session_discharge_avg_a">Средний расход за сутки: %1$s А</string>
-    <string name="session_discharge_avg_pending">Средний расход пока не измерен</string>
-    <string name="session_discharge_tracked">Собрано %1$s из 24-часового окна</string>
 
-    <!-- Фоновое слежение: канал и служебное уведомление. Канал без
+    <!-- Фоновое слежение: канал служебного уведомления. Канал без
          возможности показа (IMPORTANCE_NONE) — сервис остаётся foreground,
-         а шторка при вставке кабеля не двигается. Откат при проблемах на
+         а шторка при вставке кабеля не двигается. Содержимое уведомления —
+         только иконка и имя приложения, без текста. Откат при проблемах на
          устройстве — IMPORTANCE_MIN, см. ChargeForecastService. -->
     <string name="notification_channel_tracking">Слежение за зарядкой</string>
     <string name="notification_channel_tracking_desc">Служебное уведомление. Позволяет приложению самому замечать вставку кабеля и обновлять виджет, не открывая приложение.</string>
-    <string name="notification_tracking_active">Слежение за зарядкой активно</string>
 
     <!-- Ошибки фонового слежения -->
     <string name="error_service_start_blocked">Фоновое слежение не запустилось (%1$s). Откройте приложение — виджет и экран обновятся.</string>
@@ -62,9 +54,6 @@
     <!-- Виджет: оценка работы телефона — всегда приблизительная -->
     <string name="widget_charging_title">До 100%</string>
     <string name="widget_discharge_title">Осталось работать</string>
-    <string name="widget_collecting">Собираю данные о расходе…</string>
-    <string name="widget_measuring">Измеряю…</string>
-    <string name="widget_no_data">Собираю данные…</string>
     <string name="widget_not_tracking">Слежение остановлено — откройте приложение</string>
     <string name="widget_full_title">Заряжено полностью</string>
     <!-- Короткие подписи для узкого бакета (полоса 1×3): полная подпись
@@ -72,7 +61,5 @@
     <string name="widget_short_charging">До 100%</string>
     <string name="widget_short_full">Заряжено</string>
     <string name="widget_short_discharge">Осталось</string>
-    <string name="widget_short_collecting">Собираю…</string>
     <string name="widget_short_not_tracking">Нет слежения</string>
-    <string name="widget_short_no_data">Жду данные</string>
 </resources>

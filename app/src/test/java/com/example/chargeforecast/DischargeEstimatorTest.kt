@@ -2,7 +2,6 @@ package com.example.chargeforecast
 
 import com.example.chargeforecast.battery.BatterySnapshot
 import com.example.chargeforecast.battery.ChargeType
-import com.example.chargeforecast.forecast.DischargeEstimate
 import com.example.chargeforecast.forecast.DischargeEstimator
 import com.example.chargeforecast.forecast.DischargeObservation
 import com.example.chargeforecast.forecast.DischargeObservationReason
@@ -14,7 +13,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 // Оценка оставшейся работы: скользящее окно 24 ч, среднее ΣdU ÷ Σdt,
-// порог входа по наблюдённому времени внутри окна (спека discharge-estimate).
+// приор «полный заряд ≈ 24 ч» и плавный смесь к измеренному за 2 ч
+// (спека discharge-estimate, design D1).
 class DischargeEstimatorTest {
 
     private fun snap(
@@ -58,27 +58,57 @@ class DischargeEstimatorTest {
     }
 
     @Test
-    fun emptyWindow_showsCollecting_notZeroHours() {
-        // Первый запуск: окно пустое — состояние сбора, а не 0 ч.
+    fun emptyWindow_showsPriorFromLevel_notZeroHours() {
+        // Первый запуск: окно пустое — приор «полный заряд ≈ 24 ч»,
+        // а не состояние сбора данных и не 0 ч (спека discharge-estimate).
         val estimator = DischargeEstimator()
-        assertEquals(
-            DischargeEstimate.COLLECTING,
-            estimator.estimate(2_000_000L, 0L)
+        val estimate = estimator.estimate(
+            levelPct = 60, remainingUah = 2_000_000L, nowMs = 0L
         )
+        // 40% доли заряда × 24 ч = 34 560 с.
+        assertEquals(34_560L, estimate.remainingSec)
+        assertNull(estimate.averageCurrentUa)
     }
 
     @Test
-    fun lessThanTwoHours_staysCollecting() {
-        // Час наблюдений (4 интервала по 15 минут) — меньше порога входа:
-        // короткий участок не даёт уверенного числа.
+    fun lessThanTwoHours_blendsWithPrior_noCollectingState() {
+        // Час наблюдений (4 интервала по 15 минут) — меньше двух часов:
+        // показывается смесь приора и измеренного, состояние сбора
+        // данных отсутствует.
         val estimator = DischargeEstimator()
         feed(estimator, intervals = 4, stepUah = 100_000L)
-        val estimate = estimator.estimate(1_600_000L, 3_600_000L)
-        assertTrue("короткий набор данных не даёт оценки", estimate.collecting)
-        // Пройденная часть пути всё равно видна — экран объясняет, чего
-        // не хватает.
+        val estimate = estimator.estimate(
+            levelPct = 60, remainingUah = 1_600_000L, nowMs = 3_600_000L
+        )
+        // Измеренное: 1.6 млн мкА·ч / 400k мкА = 14 400 с; приор (40%) =
+        // 34 560 с; вес измеренного на середине горизонта smoothstep(0.5)
+        // = 0.5 → ровно половина каждого.
+        assertEquals(24_480L, estimate.remainingSec)
+        // Пройденная часть пути видна — средний ток уже измерен.
         assertNotNull(estimate.averageCurrentUa)
         assertEquals(3_600_000L, estimate.trackedMs)
+    }
+
+    @Test
+    fun prior_blendApproachesMeasured_noStepAtTwoHourBoundary() {
+        // Третья точка у границы: 1 ч 45 мин — смесь уже близка к
+        // измеренному, а на границе 2 ч — чистое измеренное: вес приора
+        // идёт в ноль плавно, ступени на пороге нет.
+        val near = DischargeEstimator().apply {
+            feed(this, intervals = 7, stepUah = 100_000L)
+        }.estimate(60, 1_200_000L, 6_300_000L)
+        val full = DischargeEstimator().apply {
+            feed(this, intervals = 8, stepUah = 100_000L)
+        }.estimate(60, 1_200_000L, 7_200_000L)
+        assertEquals("на границе 2 ч — чистое измеренное", 10_800L, full.remainingSec)
+        assertTrue(
+            "смесь у границы ближе к измеренному, чем приор",
+            near.remainingSec!! < 34_560L
+        )
+        assertTrue(
+            "на границе остаток меньше, чем чуть раньше — без ступени вверх",
+            full.remainingSec!! < near.remainingSec!!
+        )
     }
 
     @Test
@@ -87,9 +117,11 @@ class DischargeEstimatorTest {
         // (8 интервалов) накоплено 800k мкА·ч / 2 ч = 400k мкА.
         val estimator = DischargeEstimator()
         feed(estimator, intervals = 8, stepUah = 100_000L)
-        val estimate = estimator.estimate(1_200_000L, 7_200_000L)
-        assertTrue("опора должна появиться", !estimate.collecting)
-        // Остаток 1.2 млн мкА·ч / 400k мкА = 3 ч = 10 800 с.
+        val estimate = estimator.estimate(
+            levelPct = 60, remainingUah = 1_200_000L, nowMs = 7_200_000L
+        )
+        // Два часа наблюдений — вес приора обнулился, чистое измеренное:
+        // остаток 1.2 млн мкА·ч / 400k мкА = 3 ч = 10 800 с.
         assertEquals(10_800L, estimate.remainingSec!!)
         assertEquals(400_000f, estimate.averageCurrentUa!!, 1f)
         assertEquals(7_200_000L, estimate.trackedMs)
@@ -102,14 +134,13 @@ class DischargeEstimatorTest {
         // 5 с из суток — оценка смещается на сотые доли процента.
         val estimator = DischargeEstimator()
         feed(estimator, intervals = 95, stepUah = 50_000L) // 23 ч 45 мин
-        val before = estimator.estimate(1_000_000L, 85_500_000L)
-        assertTrue(!before.collecting)
+        val before = estimator.estimate(60, 1_000_000L, 85_500_000L)
 
         val spikeMs = 5_000L
         val spikeUah = 1_667L // ~1.2 А
         val t = 85_500_000L
         estimator.update(snap(t, counterUah = 1_750_000L - spikeUah), t)
-        val after = estimator.estimate(1_000_000L, t + spikeMs)
+        val after = estimator.estimate(60, 1_000_000L, t + spikeMs)
 
         val drift = kotlin.math.abs(after.remainingSec!! - before.remainingSec!!)
         val relative = drift.toDouble() / before.remainingSec!!
@@ -142,22 +173,30 @@ class DischargeEstimatorTest {
             counter -= 100_000L
             estimator.update(snap(t, counterUah = counter), t)
         }
-        assertTrue("зарядка не должна накапливать расход", !estimator.estimate(counter, t).collecting)
+        // Два часа чистого разряда после зарядки — оценка из окна:
+        // 1.2 млн мкА·ч / 400k мкА = 10 800 с.
+        assertEquals(
+            "зарядка не должна накапливать расход",
+            10_800L,
+            estimator.estimate(60, counter, t).remainingSec
+        )
     }
 
     @Test
     fun withoutCounter_intervalsDoNotAccumulate() {
         // Счётчика нет, датчик тока есть: без счётчика интервал не
-        // накапливается и оценки нет — мгновенный ток в среднее не идёт.
+        // накапливается — показывается приор от уровня, а мгновенный
+        // ток в среднее не идёт.
         val estimator = DischargeEstimator()
         var t = 0L
         repeat(20) {
             estimator.update(snap(t, dischargeUa = 500_000L), t)
             t += 900_000L
         }
-        val estimate = estimator.estimate(2_000_000L, t)
-        assertTrue("без счётчика оценки нет", estimate.collecting)
+        val estimate = estimator.estimate(60, 2_000_000L, t)
+        assertEquals("без счётчика держим приор от уровня", 34_560L, estimate.remainingSec)
         assertNull(estimate.averageCurrentUa)
+        assertEquals(0L, estimate.trackedMs)
     }
 
     @Test
@@ -172,13 +211,12 @@ class DischargeEstimatorTest {
 
     @Test
     fun zeroConsumption_staysHonest() {
-        // Счётчик не убывает — честный ноль расхода: оценки нет, потому
-        // что застой не является измеренным током, а не «0 часов».
+        // Счётчик не убывает — честный ноль расхода: застой не является
+        // измеренным током, поэтому держится приор, а не «0 часов».
         val estimator = DischargeEstimator()
         feed(estimator, intervals = 8, stepUah = 0L)
-        val estimate = estimator.estimate(1_200_000L, 7_200_000L)
-        assertTrue("застой не даёт нулевых часов", estimate.collecting)
-        assertNull(estimate.remainingSec)
+        val estimate = estimator.estimate(60, 1_200_000L, 7_200_000L)
+        assertEquals("застой держит приор, а не нулевые часы", 34_560L, estimate.remainingSec)
         // Часть наблюдений всё ещё видна: сумма времени сохранена.
         assertEquals(7_200_000L, estimate.trackedMs)
     }
@@ -211,7 +249,8 @@ class DischargeEstimatorTest {
         feed(estimator, intervals = 8, stepUah = 100_000L) // 2 часа
         val later = 27 * 60 * 60_000L
         assertEquals(0L, estimator.summary(later).trackedMs)
-        assertTrue(estimator.estimate(1_200_000L, later).collecting)
+        // Окно опустело — осознанный возврат к приору, а не 0 ч.
+        assertEquals(34_560L, estimator.estimate(60, 1_200_000L, later).remainingSec)
     }
 
     @Test
@@ -251,8 +290,7 @@ class DischargeEstimatorTest {
         estimator.restore(saved)
         assertEquals(saved.samples, estimator.state().samples)
         // 360 мА: остаток 1.28 млн мкА·ч / 360k мкА = 12 800 с.
-        val estimate = estimator.estimate(1_280_000L, 7_200_000L)
-        assertTrue(!estimate.collecting)
+        val estimate = estimator.estimate(60, 1_280_000L, 7_200_000L)
         assertEquals(12_800L, estimate.remainingSec!!)
     }
 
@@ -264,17 +302,16 @@ class DischargeEstimatorTest {
     }
 
     @Test
-    fun noRemainingEnergy_showsCollecting() {
-        // Остатка нет или он неположительный — сбор данных, а не ноль.
+    fun noRemainingEnergy_holdsPrior_notNull() {
+        // Остатка нет или он неположительный — приор от уровня, а не
+        // null и не ноль. Окно наблюдений при этом по-прежнему видно.
         val estimator = DischargeEstimator()
         feed(estimator, intervals = 8, stepUah = 100_000L)
-        val withoutBase = estimator.estimate(null, 7_200_000L)
-        assertTrue(withoutBase.collecting)
-        assertNull(withoutBase.remainingSec)
-        // Опора окна при этом уже видна — экран объясняет состояние.
+        val withoutBase = estimator.estimate(60, null, 7_200_000L)
+        assertEquals(34_560L, withoutBase.remainingSec)
         assertEquals(400_000f, withoutBase.averageCurrentUa!!, 1f)
-        assertTrue(estimator.estimate(0L, 7_200_000L).collecting)
-        assertTrue(estimator.estimate(-1L, 7_200_000L).collecting)
+        assertEquals(34_560L, estimator.estimate(60, 0L, 7_200_000L).remainingSec)
+        assertEquals(34_560L, estimator.estimate(60, -1L, 7_200_000L).remainingSec)
     }
 
     @Test

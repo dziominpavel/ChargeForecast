@@ -123,11 +123,13 @@ class ChargeForecastService : Service() {
         )
     }
 
+    // Содержимое без текста: только иконка и имя приложения — служебная
+    // строка «Слежение за зарядкой активно» не несла пользы и была видна
+    // в шторке вопреки IMPORTANCE_NONE (спека background-tracking).
     private fun buildNotification(): Notification =
         NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_charge)
             .setContentTitle(getString(R.string.app_name))
-            .setContentText(getString(R.string.notification_tracking_active))
             .setContentIntent(openAppIntent())
             // ongoing: не смахивается пользователем — сервис жив, пока
             // не выгрузится сам.

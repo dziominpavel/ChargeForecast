@@ -73,25 +73,24 @@ data class DischargeObservation(
 )
 
 // Оценка оставшейся работы телефона. Приблизительная по природе:
-// описывает продолжение среднего расхода за окно, а не обещание —
-// расход зависит от будущего использования (design Non-Goals).
+// описывает продолжение среднего расхода за окно или (до набора
+// опоры) приор «полный заряд ≈ 24 ч», а не обещание — расход зависит
+// от будущего использования (design Non-Goals).
 data class DischargeEstimate(
-    // Секунд до разряда, null — показывать нельзя.
+    // Секунд до разряда: измеренное или приорное — с первой секунды.
     val remainingSec: Long?,
-    // true — данных недостаточно, показывать состояние сбора.
-    val collecting: Boolean,
     // Величины, из которых получено время: средний ток за окно и
-    // сколько времени внутри окна наблюдено. Без них число нечем
-    // проверить (спека discharge-estimate, «Оценка объяснима»).
+    // сколько времени внутри окна наблюдено. null тока — измерение
+    // ещё не началось, строка на экране просто отсутствует (спека
+    // discharge-estimate, «Оценка объяснима»).
     val averageCurrentUa: Float? = null,
     val trackedMs: Long = 0L,
     val windowMs: Long = DischargeEstimator.WINDOW_MS
 ) {
     companion object {
-        // Опоры нет: окно пустое или мусорное — честный сбор данных.
-        val COLLECTING = DischargeEstimate(remainingSec = null, collecting = true)
-        // Зарядка: режим разряда неактуален, виджет показывает отсчёт.
-        val NONE = DischargeEstimate(remainingSec = null, collecting = false)
+        // Зарядка или оценщик выключен (консервативный режим): числа
+        // нет вовсе — не «нет данных», а «оценки не существует».
+        val NONE = DischargeEstimate(remainingSec = null)
     }
 }
 
@@ -195,31 +194,53 @@ class DischargeEstimator(
         return DischargeSummary(tracked, energy, average)
     }
 
-    // Часы из остатка мкА·ч и среднего тока мкА за окно. Без устойчивой
-    // опоры — сбор данных, ноль часов и отрицательное время не выдаются.
-    fun estimate(remainingUah: Long?, nowMs: Long): DischargeEstimate {
+    // Часы из остатка мкА·ч и среднего тока мкА за окно, с плавным
+    // переходом с приора «полный заряд ≈ 24 ч» на измеренное среднее
+    // (спека discharge-estimate, design D1): ноль часов и отрицательное
+    // время не выдаются, состояние сбора данных отсутствует.
+    fun estimate(levelPct: Int, remainingUah: Long?, nowMs: Long): DischargeEstimate {
         val summary = summary(nowMs)
         val average = summary.averageCurrentUa
-        fun collecting() = DischargeEstimate(
-            remainingSec = null,
-            collecting = true,
-            averageCurrentUa = average,
-            trackedMs = summary.trackedMs,
-            windowMs = windowMs
-        )
-        // Ниже порога — мусор датчика или застой, а не расход.
-        if (average == null || average < MIN_CREDIBLE_DISCHARGE_UA) return collecting()
-        // Опора строится только из окна: короткий участок не даёт числа.
-        if (summary.trackedMs < MIN_TRACKED_IN_WINDOW_MS) return collecting()
-        if (remainingUah == null || remainingUah <= 0L) return collecting()
-        val seconds = (remainingUah.toDouble() / average * SECONDS_PER_HOUR).toLong()
+        val priorSec = priorSeconds(levelPct)
+        // Измеренное пригодно только целиком: мусор датчика (ниже
+        // порога) или отсутствие остатка — вес измеренного обнуляется
+        // и держится приор, а не «0 часов».
+        val measuredSec = if (
+            average != null && average >= MIN_CREDIBLE_DISCHARGE_UA &&
+            remainingUah != null && remainingUah > 0L
+        ) {
+            (remainingUah.toDouble() / average * SECONDS_PER_HOUR).toLong()
+        } else {
+            null
+        }
+        val remaining = if (measuredSec == null) {
+            priorSec
+        } else {
+            // Вес измеренного: 0 при пустом окне, плавно до 1 к двум
+            // часам наблюдений — переезд с приора без скачка.
+            val wMeasured = measuredWeight(summary.trackedMs)
+            (wMeasured * measuredSec + (1f - wMeasured) * priorSec).toLong()
+        }
         return DischargeEstimate(
-            remainingSec = seconds.coerceAtLeast(0L),
-            collecting = false,
+            remainingSec = remaining.coerceAtLeast(0L),
             averageCurrentUa = average,
             trackedMs = summary.trackedMs,
             windowMs = windowMs
         )
+    }
+
+    // Приор «полный заряд ≈ 24 ч работы»: остаток доли заряда × 24 часа.
+    private fun priorSeconds(levelPct: Int): Long =
+        (100 - levelPct).coerceIn(0, 100) * PRIOR_SECONDS_PER_PCT
+
+    // Вес измеренного по наблюдённому времени: smoothstep с нулевой
+    // производной на обоих концах — без излома на границе двух часов
+    // (тот же приём, что HistoryBlender.weightOf).
+    private fun measuredWeight(trackedMs: Long): Float {
+        if (trackedMs <= 0L) return 0f
+        if (trackedMs >= MIN_TRACKED_IN_WINDOW_MS) return 1f
+        val u = trackedMs.toFloat() / MIN_TRACKED_IN_WINDOW_MS
+        return 3f * u * u - 2f * u * u * u
     }
 
     // Строки журнала для пропущенных и накопленных замеров.
@@ -290,10 +311,14 @@ class DischargeEstimator(
         const val BUCKET_MS = 5 * 60_000L
         // Жёсткий предел корзин в окне: 288 * 5 мин = 24 ч.
         const val MAX_BUCKETS = 288
-        // Ниже 1 мА — мусор датчика или застой, а не измеренный расход.
+        // Ниже 1 мА — мусор датчика или застой, а не измеренный расход:
+        // приор удерживается, вес измеренного обнуляется.
         const val MIN_CREDIBLE_DISCHARGE_UA = 1_000f
-        // Порог входа: меньше наблюдённого времени внутри окна — сбор данных.
+        // Горизонт плавного переезда с приора на измеренное среднее:
+        // столько наблюдённого времени внутри окна — вес приора 0.
         const val MIN_TRACKED_IN_WINDOW_MS = 2 * 60 * 60_000L
+        // Приор «полный заряд ≈ 24 ч» в секундах на 1% уровня.
+        const val PRIOR_SECONDS_PER_PCT = 24 * 3600L / 100
 
         private const val MILLIS_PER_HOUR = 3_600_000L
         private const val SECONDS_PER_HOUR = 3_600L

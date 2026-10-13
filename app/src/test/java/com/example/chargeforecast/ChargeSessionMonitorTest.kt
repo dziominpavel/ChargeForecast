@@ -122,9 +122,9 @@ class ChargeSessionMonitorTest {
         val updated = await(monitor) { it.snapshot?.levelPct == 69 }
         assertEquals(69, updated.snapshot!!.levelPct)
         // Свежий снапшот несёт и свежую оценку разряда, а не устаревшую.
-        assertTrue(
+        assertNotNull(
             "простой должен отдавать оценку работы",
-            !updated.discharge.collecting
+            updated.discharge.remainingSec
         )
     }
 
@@ -164,8 +164,9 @@ class ChargeSessionMonitorTest {
         assertNotNull("сводка пишется в момент отключения", summary)
         assertEquals(30, summary!!.gainedPct)
         assertEquals(ChargeType.AC, summary.chargeType)
-        // После отключения состояние — режим разряда, а не зарядный отсчёт.
-        assertTrue(idle.discharge.collecting || idle.discharge.remainingSec != null)
+        // После отключения состояние — режим разряда: оценка работы
+        // (приор или измеренное среднее) есть сразу.
+        assertNotNull(idle.discharge.remainingSec)
     }
 
     @Test

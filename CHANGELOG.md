@@ -9,11 +9,28 @@
 - Экран настроек (шестерёнка в правом верхнем углу): непрозрачность фона виджета, шаг 10%, от 0% до 100%, по умолчанию 100%.
 - Непрозрачность применяется к виджету сразу и переживает перезагрузку; гаснет только фон, цифры и подписи остаются яркими.
 
+**Изменено**
+- Экран и виджет сразу показывают остаток с первой секунды: тексты «Собираю данные…» и «Измеряю…» больше не появляются.
+- В простое без накопленных данных оценка опирается на приор «полный заряд ≈ 24 часа» и плавно переезжает на измеренное среднее.
+- При чистой установке отсчёт до 100% идёт по приору типа подключения: AC 2 часа, USB 6 часов, беспроводная 4 часа.
+- Секунды в остатке показываются только в последнюю минуту — дальше минуты или часы и минуты.
+- Виджет в последнюю минуту зарядки обновляется раз в секунду, чтобы секунды шли плавно.
+- Служебное уведомление без текста: в шторке остаются только иконка и имя приложения.
+
 ### Добавлено
 - Change: `add-widget-opacity-settings`.
 - `SettingsCache` (`app_settings`, ключ `widget_opacity_pct`, default 100, нормализация 0..100) по образцу `SessionCache`; тесты `SettingsCacheTest` (дефолт, round-trip, ноль, клампинг).
 - Виджет: фон вынесен в отдельный View-слой `@id/widget_background` во всех трёх раскладках (design D1); `BatteryWidgetProvider.render` ставит `setFloat("setAlpha")` на подложку при значении <100 — текст остаётся непрозрачным.
 - `SettingsScreen` (Slider 0..100, steps=9, только токены темы) + шестерёнка в `actions` слота `TopAppBar`; навигация — локальный `showSettings` (ручная, без Navigation Component); изменение пишет кэш и немедленно `pushAll` (спека app-settings).
+
+### Изменено
+- Change: `estimate-from-first-second`.
+- `DischargeEstimator`: приор «полный заряд ≈ 24 ч» от уровня + smoothstep-смесь веса измеренного 0→2 ч (design D1); поле `collecting` и `DischargeEstimate.COLLECTING` удалены, `estimate(levelPct, remainingUah, nowMs)`.
+- `ChargePrior` (AC 2 ч / USB 6 ч / wireless 4 ч / unknown 3 ч в %/мин) подставлен в слот истории: `loadHistoryMedian(type) ?: ChargePrior.ratePctPerMin(type)`; `HistoryBlender` не менялся.
+- `ForecastText.formatRemaining`: <1 мин — секунды, <1 ч — минуты, ≥1 ч — часы и минуты (0 мин → «N ч»); удалены `time_minutes_seconds`, `time_hours_minutes_seconds`, `measuringAgeSeconds`, `formatHoursMinutes`, `ChargeForecaster.MEASURING_MAX_MS`.
+- Виджет: `WidgetMode.COLLECTING` удалён, `NO_DATA` рендерится пустым (без текста-заглушки); `BatteryWidgetUpdater` — интервал 1 с при `CHARGING` и остатке <60 с.
+- `buildNotification()` без `setContentText`; удалены 14 строк-заглушек/времени из `strings.xml`.
+- Тесты: `DischargeEstimatorTest` (приор, смесь на середине горизонта, граница без ступени), `SessionEngineTest` (приорные часы с учётом якоря `DisplayFilter`), `WidgetTextTest`, `ChargeSessionMonitorTest` обновлены под новую семантику.
 
 ## [0.3.0] — 2026-10-12 (MINOR)
 

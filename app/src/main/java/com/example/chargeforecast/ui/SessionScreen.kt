@@ -85,12 +85,11 @@ fun SessionScreen(
                         style = MaterialTheme.typography.headlineLarge,
                         color = MaterialTheme.colorScheme.primary
                     )
-                    state.forecast.remainingSec == null -> Text(
-                        text = measuringOrCollecting(state),
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
                     else -> {
+                        // Опора есть с первой секунды (история или приор
+                        // типа подключения) — без фаз «Измеряю…» и
+                        // «Собираю данные…». Если строки нет, она просто
+                        // не показывается, а не заменяется заглушкой.
                         val context = LocalContext.current
                         val speed = state.forecast.speedPctPerMin
                         if (speed != null) {
@@ -103,21 +102,23 @@ fun SessionScreen(
                                 color = MaterialTheme.colorScheme.onBackground
                             )
                         }
-                        Text(
-                            text = stringResource(
-                                R.string.session_remaining,
-                                ForecastText.formatRemaining(
-                                    context, state.forecast.remainingSec
-                                )
-                            ),
-                            style = MaterialTheme.typography.headlineLarge,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        Text(
-                            text = accuracyText(state.forecast.accuracy),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                        state.forecast.remainingSec?.let { remainingSec ->
+                            Text(
+                                text = stringResource(
+                                    R.string.session_remaining,
+                                    ForecastText.formatRemaining(context, remainingSec)
+                                ),
+                                style = MaterialTheme.typography.headlineLarge,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                        accuracyText(state.forecast.accuracy)?.let { accuracy ->
+                            Text(
+                                text = accuracy,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                 }
             }
@@ -125,14 +126,15 @@ fun SessionScreen(
     }
 }
 
-// Экран в режиме разряда: оценка оставшейся работы и её входные величины —
-// средний ток и наблюдённое время внутри окна. Без этих величин число
-// нечем проверить (спека discharge-estimate, «Оценка объяснима»).
+// Экран в режиме разряда: оценка оставшейся работы — приор «полный
+// заряд ≈ 24 ч» либо измеренное среднее, — и её входная величина,
+// средний ток, когда он измерен (спека discharge-estimate, «Оценка
+// объяснима»). Строк о нехватке данных нет — вместо них ничего.
 @Composable
 private fun DischargeScreen(state: SessionState) {
     val context = LocalContext.current
     val estimate = state.discharge
-    val hasEstimate = estimate.collecting || estimate.remainingSec != null
+    val hasEstimate = estimate.remainingSec != null
 
     Icon(
         imageVector = if (hasEstimate) {
@@ -196,36 +198,15 @@ private fun DischargeScreen(state: SessionState) {
                     style = MaterialTheme.typography.headlineLarge,
                     color = MaterialTheme.colorScheme.primary
                 )
-            } else {
-                Text(
-                    text = stringResource(R.string.session_discharge_collecting),
-                    modifier = Modifier.fillMaxWidth(),
-                    style = MaterialTheme.typography.titleLarge,
-                    color = MaterialTheme.colorScheme.onBackground
-                )
             }
 
-            // Входные величины оценки — всегда на виду.
-            Text(
-                text = averageText(estimate.averageCurrentUa),
-                modifier = Modifier.fillMaxWidth(),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Text(
-                text = stringResource(
-                    R.string.session_discharge_tracked,
-                    ForecastText.formatHoursMinutes(context, estimate.trackedMs)
-                ),
-                modifier = Modifier.fillMaxWidth(),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            if (estimate.collecting) {
+            // Средний ток — только когда он измерен; пока измерения
+            // нет, строка просто отсутствует, без «пока не измерен».
+            estimate.averageCurrentUa?.let { averageUa ->
                 Text(
-                    text = stringResource(R.string.session_discharge_collecting_hint),
+                    text = averageText(averageUa),
                     modifier = Modifier.fillMaxWidth(),
-                    style = MaterialTheme.typography.bodySmall,
+                    style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
@@ -234,8 +215,7 @@ private fun DischargeScreen(state: SessionState) {
 }
 
 @Composable
-private fun averageText(averageUa: Float?): String {
-    if (averageUa == null) return stringResource(R.string.session_discharge_avg_pending)
+private fun averageText(averageUa: Float): String {
     return if (averageUa >= 1000f) {
         stringResource(
             R.string.session_discharge_avg_a,
@@ -282,15 +262,6 @@ private fun ElectricalLine(snapshot: BatterySnapshot) {
 }
 
 @Composable
-private fun measuringOrCollecting(state: SessionState): String {
-    // Ярус «Измеряю…»: живой счётчик секунд (тик 1 сек) вместо статичного
-    // текста — видно, что система жива с первой секунды.
-    val secs = ForecastText.measuringAgeSeconds(state.sessionAgeMs)
-    return if (secs != null) stringResource(R.string.session_measuring, secs)
-    else stringResource(R.string.session_collecting)
-}
-
-@Composable
 private fun chargeTypeText(type: ChargeType): String = stringResource(
     when (type) {
         ChargeType.AC -> R.string.session_type_ac
@@ -300,12 +271,12 @@ private fun chargeTypeText(type: ChargeType): String = stringResource(
     }
 )
 
+// Строка точности; null — ярус без опоры (COLLECTING): строка
+// скрывается, вместо неё текст-заглушка не показывается.
 @Composable
-private fun accuracyText(accuracy: ForecastAccuracy): String = stringResource(
-    when (accuracy) {
-        ForecastAccuracy.APPROXIMATE -> R.string.session_accuracy_approx
-        ForecastAccuracy.PRECISE -> R.string.session_accuracy_precise
-        ForecastAccuracy.REFINING -> R.string.session_accuracy_refining
-        ForecastAccuracy.COLLECTING -> R.string.session_collecting
-    }
-)
+private fun accuracyText(accuracy: ForecastAccuracy): String? = when (accuracy) {
+    ForecastAccuracy.APPROXIMATE -> stringResource(R.string.session_accuracy_approx)
+    ForecastAccuracy.PRECISE -> stringResource(R.string.session_accuracy_precise)
+    ForecastAccuracy.REFINING -> stringResource(R.string.session_accuracy_refining)
+    ForecastAccuracy.COLLECTING -> null
+}

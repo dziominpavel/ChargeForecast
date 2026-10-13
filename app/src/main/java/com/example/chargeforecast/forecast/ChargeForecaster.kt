@@ -1,7 +1,9 @@
 package com.example.chargeforecast.forecast
 
 // Честная точность прогноза: ярусы возраста сессии + согласованность
-// спидометров. «Измеряю…» — презентация COLLECTING с живым счётчиком.
+// спидометров. COLLECTING — ярус без опоры скорости (его строка на
+// экране скрыта: без кабеля работает карточка разряда, на кабеле
+// опорой служит история или приор типа подключения).
 enum class ForecastAccuracy {
     COLLECTING,
     APPROXIMATE,
@@ -31,9 +33,7 @@ object ChargeForecaster {
     const val PRECISE_MIN_AGE_MS = 10 * 60_000L
     const val AGREE_TOLERANCE = 0.2f
     // Граница доводки — TaperCurve.TAPER_START_LEVEL: ниже неё скорость
-    // ниже порога — мусор рампы. Ярус «Измеряю…»: первые секунды цифр
-    // нет — честный предел данных.
-    const val MEASURING_MAX_MS = 20_000L
+    // ниже порога — мусор рампы.
 
     fun forecast(
         levelPct: Int,

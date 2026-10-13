@@ -195,31 +195,28 @@ class BatteryWidgetProvider : AppWidgetProvider() {
                 WidgetMode.CHARGING -> context.getString(R.string.widget_short_charging)
                 WidgetMode.FULL -> context.getString(R.string.widget_short_full)
                 WidgetMode.DISCHARGE -> context.getString(R.string.widget_short_discharge)
-                WidgetMode.COLLECTING -> context.getString(R.string.widget_short_collecting)
                 WidgetMode.NOT_TRACKING -> context.getString(R.string.widget_short_not_tracking)
-                WidgetMode.NO_DATA -> context.getString(R.string.widget_short_no_data)
+                // Пустое содержимое вместо текста-заглушки.
+                WidgetMode.NO_DATA -> ""
             }
 
         private fun title(context: Context, model: WidgetModel): String =
             when (model.mode) {
                 WidgetMode.CHARGING -> context.getString(R.string.widget_charging_title)
                 WidgetMode.FULL -> context.getString(R.string.widget_full_title)
-                WidgetMode.DISCHARGE, WidgetMode.COLLECTING ->
-                    context.getString(R.string.widget_discharge_title)
+                WidgetMode.DISCHARGE -> context.getString(R.string.widget_discharge_title)
                 WidgetMode.NOT_TRACKING -> context.getString(R.string.widget_not_tracking)
-                WidgetMode.NO_DATA -> context.getString(R.string.widget_no_data)
+                // Пустое содержимое вместо текста-заглушки.
+                WidgetMode.NO_DATA -> ""
             }
 
-        // null — строку времени показывать не нужно.
+        // null — строку времени показывать не нужно: без числа (режим
+        // ожидания или остановленного слежения) строка просто скрыта.
         private fun time(context: Context, model: WidgetModel): String? =
             when (model.mode) {
                 WidgetMode.FULL -> context.getString(R.string.session_charged)
-                WidgetMode.CHARGING -> model.remainingSec
+                WidgetMode.CHARGING, WidgetMode.DISCHARGE -> model.remainingSec
                     ?.let { ForecastText.formatRemaining(context, it) }
-                    ?: context.getString(R.string.widget_measuring)
-                WidgetMode.DISCHARGE -> model.remainingSec
-                    ?.let { ForecastText.formatRemaining(context, it) }
-                WidgetMode.COLLECTING -> context.getString(R.string.widget_collecting)
                 WidgetMode.NOT_TRACKING, WidgetMode.NO_DATA -> null
             }
 

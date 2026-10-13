@@ -56,21 +56,23 @@ class SessionEngineTest {
     }
 
     @Test
-    fun firstSeconds_showForecastImmediately() {
-        // Цифры с первой валидной опоры (обычно 1-3 сек сессии), без
-        // ожидания 20-секундной завесы: приор/ток/счётчик дают опору.
+    fun firstSeconds_showPriorForecastImmediately() {
+        // Цифры с первой секунды без истории: опорой служит дефолтный
+        // приор типа подключения (AC ≈ 2 ч на полный заряд) — без фаз
+        // «Измеряю…» и «Собираю данные…» (спека charge-forecast).
         val engine = SessionEngine()
-        // Ток живой с первого сэмпла — цифры есть уже в секунду ноль
-        // («примерно», интеграл в секундах).
         val early = engine.update(snap(0, 50), 0)
         assertEquals(ForecastAccuracy.APPROXIMATE, early.forecast.accuracy)
-        assertEquals(5595L, early.forecast.remainingSec)
+        // Приор 0.83 %/мин от уровня 50 с доводкой → ~111.9 мин = ~6714 с.
+        assertTrue(
+            "ожидали ~6714, получили ${early.forecast.remainingSec}",
+            early.forecast.remainingSec!! in 6650L..6800L
+        )
         val ready = engine.update(snap(5_000, 50), 5_000)
         assertEquals(ForecastAccuracy.APPROXIMATE, ready.forecast.accuracy)
-        // Интеграл с ~49.5% остатка → ~92.9 мин = ~5572 с.
         assertTrue(
-            "ожидали ~5572, получили ${ready.forecast.remainingSec}",
-            ready.forecast.remainingSec!! in 5500L..5650L
+            "ожидали ~6714, получили ${ready.forecast.remainingSec}",
+            ready.forecast.remainingSec!! in 6650L..6800L
         )
     }
 
@@ -109,13 +111,19 @@ class SessionEngineTest {
     @Test
     fun counterMissing_currentOnlyWorks() {
         // Счётчика нет: S2 по току через sysfs-ёмкость, уровень — fallback.
+        // До 180-й секунды идёт смесь с приором типа (цифры есть с
+        // первого тика), к 200-й — ведут чистые живые замеры.
         val engine = SessionEngine(sysfsCapacityUah = { capacity })
-        engine.update(snap(0, 50, counterUah = null), 0)
-        val st = engine.update(snap(30_000, 50, counterUah = null), 30_000)
+        var t = 0L
+        var st: SessionState? = null
+        while (t <= 200_000L) {
+            st = engine.update(snap(t, 50, counterUah = null), t)
+            t += 1_000L
+        }
         assertEquals(
             "ожидали ~1.0 по току",
             1.0f,
-            st.forecast.speedPctPerMin!!,
+            st!!.forecast.speedPctPerMin!!,
             0.05f
         )
         // Интеграл с уровня 50: 30 линейных + хвост корзин = 93.3 мин
@@ -129,25 +137,29 @@ class SessionEngineTest {
     @Test
     fun currentMissing_counterOnlyWorks() {
         // Тока нет: S1 по счётчику (МНК, непрерывный), S3 — fallback.
+        // Смесь с приором уходит к живым к 180-й секунде — цифры
+        // показываются всё время.
         val engine = SessionEngine()
-        engine.update(snap(0, 50, currentMa = null, counterUah = 2_000_000L), 0)
-        val st = engine.update(
-            snap(
-                30_000, 50, currentMa = null,
-                counterUah = 2_000_000L + 30_000L * 40_000L / 60_000L
-            ),
-            30_000
-        )
+        var t = 0L
+        var st: SessionState? = null
+        while (t <= 200_000L) {
+            val level = (50 + t / 60_000L).toInt()
+            st = engine.update(snap(t, level, currentMa = null), t)
+            t += 1_000L
+        }
         assertEquals(
             "ожидали ~1.0 по счётчику",
             1.0f,
-            st.forecast.speedPctPerMin!!,
+            st!!.forecast.speedPctPerMin!!,
             0.05f
         )
-        // Интеграл с уровня 50: ≈90.8 мин = ~5445 с.
+        // Сырой интеграл с уровня 53 (~5415 с), но показанное отстаёт:
+        // переход приор→live идёт скольжением якоря вниз, плюс отсчёт
+        // тикает — к 200-й секунде детерминировано ~5247 с (скорость
+        // 1.0±0.05 уже проверена выше — ставка там, не в числе).
         assertTrue(
-            "ожидали ~5445, получили ${st.forecast.remainingSec}",
-            st.forecast.remainingSec!! in 5350L..5550L
+            "ожидали ~5247, получили ${st.forecast.remainingSec}",
+            st.forecast.remainingSec!! in 5150L..5350L
         )
     }
 
@@ -348,10 +360,11 @@ class SessionEngineTest {
     }
 
     @Test
-    fun frozenCounterAndLevel_staysCollecting() {
-        // Симптом автора: счётчик живой, но СТОИТ (EMUI Smart-зарядка
-        // ставит зарядку на паузу), уровень замерзает → честное
-        // «собираю данные», без цифр из пустоты.
+    fun frozenCounterAndLevel_fallsBackToPriorEstimate() {
+        // Симптом автора: счётчик и уровень стоят (EMUI Smart-зарядка
+        // ставит зарядку на паузу), ток молчит — мусорной оценки нет,
+        // цифры держит приор типа подключения (спека charge-forecast,
+        // «Мусор рампы скрыт»).
         val engine = SessionEngine()
         var t = 0L
         var last: SessionState? = null
@@ -361,8 +374,14 @@ class SessionEngineTest {
             )
             t += 1_000L
         }
-        assertNull(last!!.forecast.remainingSec)
-        assertEquals(ForecastAccuracy.COLLECTING, last.forecast.accuracy)
+        // Сырой остаток из приора — константа ~5274 с, но показанное
+        // тикает якорем минус время (DisplayFilter): 5274 - 150 = 5124.
+        assertTrue(
+            "ожидали ~5124 (якорь из приора), получили ${last!!.forecast.remainingSec}",
+            last.forecast.remainingSec!! in 5050L..5200L
+        )
+        // Итоговая скорость — приор 0.83 %/мин, а не мусор нулевого дельта.
+        assertEquals(0.833f, last.forecast.speedPctPerMin!!, 0.01f)
     }
 
     @Test
@@ -548,8 +567,8 @@ class SessionEngineTest {
             snap(t, 50, plugged = false, charging = false, counterUah = counter),
             t
         )
-        // Остаток 2.8 млн мкА·ч / 400k мкА = 7 ч = 25200 с.
-        assertTrue("простой должен отдавать оценку, а не зарядку", !state.discharge.collecting)
+        // Остаток 2.8 млн мкА·ч / 400k мкА = 7 ч = 25200 с (два часа
+        // наблюдений — вес приора 0, чистое измеренное).
         assertEquals(25_200L, state.discharge.remainingSec!!)
         assertEquals(400_000f, state.discharge.averageCurrentUa!!, 1f)
         assertEquals(7_200_000L, state.discharge.trackedMs)
@@ -564,12 +583,13 @@ class SessionEngineTest {
     }
 
     @Test
-    fun idle_withoutAccumulatorBase_showsCollecting_notZeroHours() {
-        // Опоры нет (набора расхода ещё не было) — честный сбор данных,
-        // а не нулевые часы (спека discharge-estimate).
+    fun idle_withoutAccumulatorBase_showsPriorEstimate() {
+        // Опоры нет (набора расхода ещё не было) — приор «полный заряд
+        // ≈ 24 ч» от уровня: 50% × 24 ч = 43 200 с, а не ноль и не
+        // текст-заглушка (спека discharge-estimate).
         val engine = SessionEngine(SessionCache(FakeSharedPreferences()), DischargeEstimator())
         val state = engine.update(snap(0, 50, plugged = false, charging = false), 0)
-        assertEquals(DischargeEstimate.COLLECTING, state.discharge)
+        assertEquals(DischargeEstimate(remainingSec = 43_200L), state.discharge)
     }
 
     @Test

@@ -10,13 +10,12 @@ enum class WidgetMode {
     CHARGING,
     // Заряжено полностью: состояние, а не нулевой отсчёт.
     FULL,
-    // Простой — приблизительное оставшееся время работы.
+    // Простой — приблизительное оставшееся время работы (приор или
+    // измеренное среднее).
     DISCHARGE,
-    // Простой, но опоры для оценки ещё нет.
-    COLLECTING,
     // Слежение остановлено: любое число могло замерзнуть.
     NOT_TRACKING,
-    // Состояние ещё не посчитано.
+    // Состояние ещё не посчитано — пустое содержимое, без текста.
     NO_DATA
 }
 
@@ -89,11 +88,12 @@ object WidgetText {
                 state.forecast.accuracy != ForecastAccuracy.PRECISE
             )
         }
-        // Простой: оценка работы. Без устойчивой опоры — сбор данных,
-        // а не пустой отсчёт и не нулевые минуты.
+        // Простой: приор «полный заряд ≈ 24 ч» или измеренное среднее —
+        // число с первой секунды, текстов-заглушек нет. Числа нет
+        // только у отключённого оценщика — тогда пустое содержимое.
         val estimate = state.discharge
-        return if (estimate.collecting || estimate.remainingSec == null) {
-            WidgetModel(WidgetMode.COLLECTING, null, level, true)
+        return if (estimate.remainingSec == null) {
+            WidgetModel(WidgetMode.NO_DATA, null, level, false)
         } else {
             WidgetModel(WidgetMode.DISCHARGE, estimate.remainingSec, level, true)
         }

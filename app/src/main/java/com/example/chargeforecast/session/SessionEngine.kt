@@ -5,6 +5,7 @@ import com.example.chargeforecast.battery.ChargeType
 import com.example.chargeforecast.forecast.CapacityTracker
 import com.example.chargeforecast.forecast.ChargeForecaster
 import com.example.chargeforecast.forecast.ChargeForecast
+import com.example.chargeforecast.forecast.ChargePrior
 import com.example.chargeforecast.forecast.ChargeSpeedCalculator
 import com.example.chargeforecast.forecast.CounterSpeedometer
 import com.example.chargeforecast.forecast.DischargeEstimate
@@ -44,8 +45,9 @@ internal class SessionEngine(
     // вставлен → реальный AC/USB/Wireless). В момент отключения снапшот
     // уже NONE, поэтому тип для сводки/истории храним отдельно.
     private var sessionChargeType: ChargeType? = null
-    // Медиана истории последних сессий этого типа подключения — читается
-    // один раз в секунду ноль и держится до конца сессии (заморозка).
+    // Опора истории сессии — медиана прошлых сессий типа или дефолтный
+    // приор подключения. Читается один раз в секунду ноль и держится
+    // до конца сессии (заморозка).
     private var historyBaseRatePctPerMin: Float? = null
     private var emaCurrentUa: Long? = null
     private var lastEmaSampleMs: Long? = null
@@ -98,9 +100,12 @@ internal class SessionEngine(
             plugDetectedAtMs = nowMs
             sessionStartLevelPct = snapshot.levelPct
             sessionChargeType = snapshot.chargeType
-            // История прошлых сессий этого профиля — один раз на сессию;
-            // внутри сессии кэш не читается (заморозка, design D5).
+            // Опора первой секунды: медиана истории прошлых сессий типа,
+            // а при чистой установке — дефолтный приор по типу подключения
+            // (спека charge-forecast). Один раз на сессию; внутри сессии
+            // кэш не читается (заморозка, design D5).
             historyBaseRatePctPerMin = cache?.loadHistoryMedian(snapshot.chargeType)
+                ?: ChargePrior.ratePctPerMin(snapshot.chargeType)
             // Кривая профиля на всю сессию: обученная из кэша или дефолт.
             taperFactors = cache?.loadCurve(snapshot.chargeType)
                 ?: TaperCurve.DEFAULT_FACTORS
@@ -228,17 +233,18 @@ internal class SessionEngine(
         }
     }
 
-    // Оценка работы из окна наблюдений. Живой ёмкости в простое нет —
-    // берём sysfs или кэш, как на зарядке до первого замера. В оценку
-    // идут средний ток и наблюдённое время внутри окна — их же видит
-    // экран и журнал (спека discharge-estimate, «Оценка объяснима»).
+    // Оценка работы из окна наблюдений, с приором «полный заряд ≈ 24 ч»,
+    // пока окно неполное (спека discharge-estimate). Живой ёмкости в
+    // простое нет — берём sysfs или кэш, как на зарядке до первого
+    // замера. В оценку идут средний ток и наблюдённое время внутри
+    // окна — их же видит экран и журнал («Оценка объяснима»).
     private fun dischargeEstimate(snapshot: BatterySnapshot, nowMs: Long): DischargeEstimate {
         val estimator = dischargeEstimator ?: return DischargeEstimate.NONE
         val capacityUah = sysfsCapacityUah() ?: cache?.loadCapacity()
         val remainingUah = capacityUah?.let { cap ->
             snapshot.chargeCounterUah?.let { counter -> cap - counter }
         }
-        return estimator.estimate(remainingUah, nowMs)
+        return estimator.estimate(snapshot.levelPct, remainingUah, nowMs)
     }
 
     private fun idle(

@@ -77,9 +77,23 @@ class WidgetTextTest {
     }
 
     @Test
-    fun charging_withoutHistory_showsMeasuring_notZeroMinutes() {
-        // «Нет истории зарядок»: опоры нет, цифры нет — состояние измерения,
-        // а не пустой отсчёт и не нулевые минуты (спека battery-widget).
+    fun charging_withoutHistory_priorNumber_showsCountdown() {
+        // «Нет истории зарядок»: движок подставляет в слот истории приор
+        // типа подключения — виджет показывает CHARGING с числом, а не
+        // состояние сбора данных (спека battery-widget).
+        val model = WidgetText.model(
+            state(level = 35, plugged = true, remainingSec = 6_714L),
+            tracking = true
+        )
+        assertEquals(WidgetMode.CHARGING, model.mode)
+        assertEquals(6_714L, model.remainingSec)
+        assertEquals(35, model.levelPct)
+    }
+
+    @Test
+    fun charging_withoutNumber_hidesTime_notPlaceholderText() {
+        // Модель не выдумывает тексты: числа нет — строка времени просто
+        // отсутствует, «Измеряю…» больше негде взяться.
         val model = WidgetText.model(
             state(level = 35, plugged = true, remainingSec = null),
             tracking = true
@@ -116,28 +130,32 @@ class WidgetTextTest {
     }
 
     @Test
-    fun unplugged_withEstimate_isApproximateDischarge() {
+    fun unplugged_withPriorEstimate_isApproximateDischarge() {
+        // Приор «полный заряд ≈ 24 ч»: 58% × 24 ч = 50 112 с — число
+        // есть с первой секунды, текстов-заглушек нет.
         val model = WidgetText.model(
             state(
                 level = 42,
                 plugged = false,
-                discharge = DischargeEstimate(remainingSec = 39_600L, collecting = false)
+                discharge = DischargeEstimate(remainingSec = 50_112L)
             ),
             tracking = true
         )
         assertEquals(WidgetMode.DISCHARGE, model.mode)
-        assertEquals(39_600L, model.remainingSec)
+        assertEquals(50_112L, model.remainingSec)
         assertEquals(42, model.levelPct)
         assertTrue("оценка разряда приблизительна по природе", model.approximate)
     }
 
     @Test
-    fun unplugged_withoutAccumulator_collectsData_notZeroHours() {
+    fun unplugged_withoutNumber_showsNoDataEmpty() {
+        // Числа нет только у отключённого оценщика (консервативный
+        // режим) — пустое содержимое, без текста-заглушки.
         val model = WidgetText.model(
-            state(level = 42, plugged = false, discharge = DischargeEstimate.COLLECTING),
+            state(level = 42, plugged = false, discharge = DischargeEstimate.NONE),
             tracking = true
         )
-        assertEquals(WidgetMode.COLLECTING, model.mode)
+        assertEquals(WidgetMode.NO_DATA, model.mode)
         assertNull(model.remainingSec)
         assertEquals(42, model.levelPct)
     }
@@ -151,7 +169,7 @@ class WidgetTextTest {
                 level = 60,
                 plugged = true,
                 remainingSec = 5_400L,
-                discharge = DischargeEstimate(remainingSec = 39_600L, collecting = false)
+                discharge = DischargeEstimate(remainingSec = 39_600L)
             ),
             tracking = false
         )
