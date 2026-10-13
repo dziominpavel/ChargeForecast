@@ -38,6 +38,14 @@ class DisplayFilter(
     // отсчитывается по времени. Показ = якорь − (now − anchorAtMs).
     private var anchorSec: Float? = null
     private var anchorAtMs: Long? = null
+    // Отслеживание ревизий модели для догоняющего держания сошедшейся
+    // модели (залипание показа ниже модели — downSlides/ratchet):
+    // максимум кандидата с посева якоря, счётчик подряд одинаковых
+    // кандидатов, защёлка подтверждённого пересмотра вверх.
+    private var maxCandidate: Float? = null
+    private var prevCandidate: Float? = null
+    private var stableTicks = 0
+    private var reviewLatched = false
     private var reviewTicks = 0
 
     // rawRemainingSec — сырая оценка остатка в секундах.
@@ -104,18 +112,38 @@ class DisplayFilter(
         }
         val shown = shownNow(nowMs)
         if (shown == null || shown <= 0f) {
+            // Новая точка отсчёта — отслеживание ревизий начинается
+            // заново: просадки и стабилизации прошлой эпохи якорю
+            // больше не указ.
             // Первый показ или исчерпанный якорь при живой модели —
             // новая точка отсчёта от текущей EMA.
+            maxCandidate = null
+            prevCandidate = null
+            stableTicks = 0
+            reviewLatched = false
             val seed = emaSec ?: return null
             setAnchor(seed, nowMs)
             return out(nowMs)
         }
         if (rawRemainingSec == null) {
             // Данных нет — якорь не трогаем, отсчёт продолжает убывать.
+            // Пропуск данных обнуляет счётчик стабильности (неизвестное
+            // не считается стабилизацией), максимум для просадок живёт дальше.
+            stableTicks = 0
             return out(nowMs)
         }
         val ema = emaSec ?: return null
         val candidate = ema.roundToLong().coerceAtLeast(0L).toFloat()
+        // Ревизия модели: максимум кандидата с посева якоря (просадка
+        // считается от него) и счётчик подряд одинаковых кандидатов
+        // (стабилизация после пересмотра).
+        maxCandidate = maxOf(maxCandidate ?: candidate, candidate)
+        if (candidate == prevCandidate) {
+            stableTicks++
+        } else {
+            stableTicks = 0
+            prevCandidate = candidate
+        }
         val trendOpen = trendTicks >= TREND_TICKS
         when {
             // Вниз — скольжением, всегда. Крупное падение (граница корзин,
@@ -125,6 +153,11 @@ class DisplayFilter(
             // пила вернётся.
             candidate <= shown -> {
                 reviewTicks = 0
+                // Защёлка снимается только уходом модели строго вниз:
+                // равенство на тиканье — ещё не опровержение ревизии.
+                if (candidate < shown) {
+                    reviewLatched = false
+                }
                 if (shown - candidate > TREND_RESET_DROP_SEC) {
                     resetTrendWindow(rawRemainingSec, nowMs)
                 }
@@ -136,14 +169,32 @@ class DisplayFilter(
             // держится выше порога +25% три тика подряд (одиночные
             // всплески шума сбрасывают счётчик затуханием). До
             // подтверждения якорь не трогается — отсчёт продолжается.
-            candidate > shown * (1f + REVIEW_FRACTION) -> {
+            // Подтверждённый пересмотр вверх (+25% три тика подряд)
+            // защёлкивается: дальше якорь догоняет модель каждый тик,
+            // пока модель не уйдёт обратно вниз (там защёлка снимается).
+            candidate > shown * (1f + REVIEW_FRACTION) || reviewLatched -> {
                 reviewTicks++
                 if (reviewTicks >= REVIEW_TICKS) {
+                    reviewLatched = true
                     glide(candidate, shown, nowMs)
                 }
             }
             else -> {
                 reviewTicks = 0
+                // Догоняющее держание сошедшейся модели: кандидат крупно
+                // просел вниз (>DROP_ARM_FRACTION от максимума с посева)
+                // и застыл (STABLE_TICKS подряд одинаковых), а показ залип
+                // ниже него на тиканье — ведём якорь к модели скольжением
+                // (шаги ограничены в glide), а не даём тикать мимо модели.
+                // На ровном отсчёте (просадок не было) и на шуме (нет
+                // стабильности) правило не срабатывает — тиканье сохраняется.
+                val maxC = maxCandidate
+                if (maxC != null && maxC > 0f &&
+                    1f - candidate / maxC > DROP_ARM_FRACTION &&
+                    stableTicks >= STABLE_TICKS
+                ) {
+                    glide(candidate, shown, nowMs)
+                }
                 // Кандидат выше показанного, но путь не открыт — якорь
                 // держим: подъём вслед за неподтверждённой моделью
                 // запрещён («без ложных подъёмов»).
@@ -198,6 +249,10 @@ class DisplayFilter(
         lastUpdateMs = null
         anchorSec = null
         anchorAtMs = null
+        maxCandidate = null
+        prevCandidate = null
+        stableTicks = 0
+        reviewLatched = false
         reviewTicks = 0
     }
 
@@ -231,5 +286,13 @@ class DisplayFilter(
         const val SLEW_FRACTION = 0.2f
         // Шаг-пол: гарантирует движение к цели на малых расхождениях.
         const val SLEW_MIN_STEP_SEC = 2f
+        // Доля просадки кандидата от максимума с посева, включающая
+        // догоняющее держание: отделяет ревизии от шума ±5% с запасом.
+        // Число калибруется на устройстве вместе с остальными константами
+        // скольжения (менять только парой с DisplayFilterTest).
+        const val DROP_ARM_FRACTION = 0.25f
+        // Подряд одинаковых (после округления) кандидатов для признания
+        // стабилизации модели после пересмотра.
+        const val STABLE_TICKS = 5
     }
 }
