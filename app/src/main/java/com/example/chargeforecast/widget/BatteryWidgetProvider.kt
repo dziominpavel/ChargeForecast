@@ -14,6 +14,7 @@ import com.example.chargeforecast.ChargeForecastApplication
 import com.example.chargeforecast.MainActivity
 import com.example.chargeforecast.R
 import com.example.chargeforecast.service.ChargeForecastService
+import com.example.chargeforecast.settings.SettingsCache
 import com.example.chargeforecast.ui.ForecastText
 
 // Виджет домашнего экрана — вторая поверхность того же состояния сессии.
@@ -115,6 +116,16 @@ class BatteryWidgetProvider : AppWidgetProvider() {
             WidgetSize.NARROW -> renderNarrow(context, model)
             WidgetSize.WIDE -> renderStacked(context, model, R.layout.widget_battery_wide)
             WidgetSize.MEDIUM -> renderStacked(context, model, R.layout.widget_battery)
+        }.apply { applyBackgroundOpacity(context, this) }
+
+        // Непрозрачность фона по настройке (design D1): alpha ставится
+        // только на подложку @id/widget_background — текст остаётся
+        // непрозрачным. При 100% (дефолт) вызов не нужен вовсе.
+        private fun applyBackgroundOpacity(context: Context, views: RemoteViews) {
+            val pct = SettingsCache.from(context).loadWidgetOpacityPct()
+            if (pct < SettingsCache.DEFAULT_WIDGET_OPACITY_PCT) {
+                views.setFloat(R.id.widget_background, "setAlpha", pct / 100f)
+            }
         }
 
         // Средний и широкий бакеты: три строки, свои кегли в раскладке.

@@ -53,6 +53,12 @@
     <!-- Ошибки фонового слежения -->
     <string name="error_service_start_blocked">Фоновое слежение не запустилось (%1$s). Откройте приложение — виджет и экран обновятся.</string>
 
+    <!-- Настройки: первая настройка — непрозрачность фона виджета -->
+    <string name="settings_title">Настройки</string>
+    <string name="settings_widget_opacity">Непрозрачность фона виджета</string>
+    <string name="settings_widget_opacity_value">%1$d%%</string>
+    <string name="settings_widget_opacity_hint">Гаснет только фон: цифры и подписи остаются яркими. 0%% — фона нет, 100%% — виджет как прежде.</string>
+
     <!-- Виджет: оценка работы телефона — всегда приблизительная -->
     <string name="widget_charging_title">До 100%</string>
     <string name="widget_discharge_title">Осталось работать</string>

@@ -5,6 +5,16 @@
 
 ## [Unreleased]
 
+**Добавлено**
+- Экран настроек (шестерёнка в правом верхнем углу): непрозрачность фона виджета, шаг 10%, от 0% до 100%, по умолчанию 100%.
+- Непрозрачность применяется к виджету сразу и переживает перезагрузку; гаснет только фон, цифры и подписи остаются яркими.
+
+### Добавлено
+- Change: `add-widget-opacity-settings`.
+- `SettingsCache` (`app_settings`, ключ `widget_opacity_pct`, default 100, нормализация 0..100) по образцу `SessionCache`; тесты `SettingsCacheTest` (дефолт, round-trip, ноль, клампинг).
+- Виджет: фон вынесен в отдельный View-слой `@id/widget_background` во всех трёх раскладках (design D1); `BatteryWidgetProvider.render` ставит `setFloat("setAlpha")` на подложку при значении <100 — текст остаётся непрозрачным.
+- `SettingsScreen` (Slider 0..100, steps=9, только токены темы) + шестерёнка в `actions` слота `TopAppBar`; навигация — локальный `showSettings` (ручная, без Navigation Component); изменение пишет кэш и немедленно `pushAll` (спека app-settings).
+
 ## [0.3.0] — 2026-10-12 (MINOR)
 
 **Исправлено**
