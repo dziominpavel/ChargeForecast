@@ -567,11 +567,44 @@ class SessionEngineTest {
             snap(t, 50, plugged = false, charging = false, counterUah = counter),
             t
         )
-        // Остаток 2.8 млн мкА·ч / 400k мкА = 7 ч = 25200 с (два часа
-        // наблюдений — вес приора 0, чистое измеренное).
-        assertEquals(25_200L, state.discharge.remainingSec!!)
+        // Остаток — заряд В батарее (счётчик) 1.2 млн мкА·ч / 400k мкА =
+        // 3 ч = 10 800 с (два часа наблюдений — вес приора 0, чистое
+        // измеренное). Энергия до полного (ёмкость − счётчик) сюда не
+        // годится: она растёт при разрядке и переворачивает оценку.
+        assertEquals(10_800L, state.discharge.remainingSec!!)
         assertEquals(400_000f, state.discharge.averageCurrentUa!!, 1f)
         assertEquals(7_200_000L, state.discharge.trackedMs)
+    }
+
+    @Test
+    fun dischargeEstimate_usesChargeInBattery_notEnergyToFull() {
+        // Регрессия «14 ч при 5%»: числитель оценки — заряд В батарее
+        // (счётчик), а не энергия до полного (ёмкость − счётчик): она
+        // растёт при разрядке и переворачивает оценку. Ёмкость в кэше
+        // есть — старая формула дала бы 34 200 с вместо истинных 1800.
+        val cache = SessionCache(FakeSharedPreferences())
+        cache.saveCapacity(capacity)
+        val engine = SessionEngine(cache, DischargeEstimator())
+
+        // 400 мА: восемь интервалов по 15 минут, счётчик падает с 1 млн
+        // до 200k мкА·ч — в окне ровно 2 часа, вес приора 0.
+        var t = 0L
+        var counter = 1_000_000L
+        engine.update(snap(t, 5, plugged = false, charging = false, counterUah = counter), t)
+        repeat(7) {
+            t += 900_000L
+            counter -= 100_000L
+            engine.update(snap(t, 5, plugged = false, charging = false, counterUah = counter), t)
+        }
+        t += 900_000L
+        counter -= 100_000L
+        val state = engine.update(
+            snap(t, 5, plugged = false, charging = false, counterUah = counter), t
+        )
+        // Остаток 200k мкА·ч ÷ 400k мкА = 0.5 ч = 1800 с — минуты, а не
+        // часы: при глубоком разряде честное время убывает, а не растёт.
+        assertEquals(1_800L, state.discharge.remainingSec!!)
+        assertEquals(400_000f, state.discharge.averageCurrentUa!!, 1f)
     }
 
     @Test

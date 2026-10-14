@@ -2,6 +2,7 @@ package com.example.chargeforecast
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.fillMaxSize
@@ -28,6 +29,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.chargeforecast.BuildConfig
 import com.example.chargeforecast.service.ChargeForecastService
 import com.example.chargeforecast.settings.SettingsCache
 import com.example.chargeforecast.ui.SessionScreen
@@ -60,6 +62,11 @@ fun ChargeForecastApp(viewModel: SessionViewModel = viewModel()) {
     // Ручная навигация (design D3): второй экран — настройки, состояние
     // сессии продолжает течь, ViewModel не пересоздаётся.
     var showSettings by remember { mutableStateOf(false) }
+
+    // Системная «назад» возвращает на экран сессии, а не сворачивает
+    // приложение (спека app-settings). На главном экране «назад»
+    // остаётся системным — свернуть приложение.
+    BackHandler(enabled = showSettings) { showSettings = false }
 
     // Видимые ошибки системы — в Snackbar, не глушим (см. AGENTS.md).
     // Поток событий: каждое сообщение показывается ровно один раз, от
@@ -122,6 +129,11 @@ private fun SettingsRoute(
                 BatteryWidgetProvider.currentModel(context)
             )
         },
+        // Версия и дата сборки фиксируются на момент сборки (спека
+        // app-settings): экран не знает про BuildConfig, значения
+        // приходят параметром — по образцу opacityPct.
+        versionName = BuildConfig.VERSION_NAME,
+        buildDate = BuildConfig.BUILD_DATE,
         modifier = modifier
     )
 }

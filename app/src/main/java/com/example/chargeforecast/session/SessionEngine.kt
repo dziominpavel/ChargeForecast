@@ -234,17 +234,16 @@ internal class SessionEngine(
     }
 
     // Оценка работы из окна наблюдений, с приором «полный заряд ≈ 24 ч»,
-    // пока окно неполное (спека discharge-estimate). Живой ёмкости в
-    // простое нет — берём sysfs или кэш, как на зарядке до первого
-    // замера. В оценку идут средний ток и наблюдённое время внутри
-    // окна — их же видит экран и журнал («Оценка объяснима»).
+    // пока окно неполное (спека discharge-estimate). В оценку идут
+    // средний ток и наблюдённое время внутри окна — их же видит экран
+    // и журнал («Оценка объяснима»).
     private fun dischargeEstimate(snapshot: BatterySnapshot, nowMs: Long): DischargeEstimate {
         val estimator = dischargeEstimator ?: return DischargeEstimate.NONE
-        val capacityUah = sysfsCapacityUah() ?: cache?.loadCapacity()
-        val remainingUah = capacityUah?.let { cap ->
-            snapshot.chargeCounterUah?.let { counter -> cap - counter }
-        }
-        return estimator.estimate(snapshot.levelPct, remainingUah, nowMs)
+        // Остаток для разрядного оценщика — заряд В батарее (счётчик),
+        // а не энергия до полного (ёмкость − счётчик): оценщик делит
+        // этот остаток на средний ток, и только заряд в батарее
+        // убывает вместе с разрядом. Ёмкость здесь не нужна.
+        return estimator.estimate(snapshot.levelPct, snapshot.chargeCounterUah, nowMs)
     }
 
     private fun idle(
