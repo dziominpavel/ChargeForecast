@@ -2,6 +2,7 @@ package com.example.chargeforecast.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -23,11 +24,14 @@ import kotlin.math.roundToInt
 // Экран настроек — вторая поверхность приложения (ручная навигация в
 // ChargeForecastApp). Первая настройка — непрозрачность фона виджета:
 // ползунок ступенями по 10% от 0 до 100. Значение пишется в кэш
-// настроек и сразу толкается на виджет.
+// настроек и сразу толкается на виджет. Внизу — статичная строка версии
+// приложения и даты сборки (спека app-settings).
 @Composable
 fun SettingsScreen(
     opacityPct: Int,
     onOpacityChange: (Int) -> Unit,
+    versionName: String,
+    buildDate: String,
     modifier: Modifier = Modifier
 ) {
     // Ступеньки ползунка: шаг 10% ⇒ 9 внутренних ступеней (спека app-settings).
@@ -76,6 +80,23 @@ fun SettingsScreen(
             text = stringResource(R.string.settings_widget_opacity_hint),
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        // Нижний блок версии (design D2): весомый спейсер прижимает
+        // строку к низу экрана независимо от количества настроек выше.
+        // Значения статичны — зафиксированы на момент сборки.
+        Spacer(modifier = Modifier.weight(1f))
+
+        Text(
+            text = stringResource(
+                R.string.settings_version_info,
+                stringResource(R.string.app_name),
+                versionName,
+                buildDate
+            ),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = ChargeDimens.GapSmall)
         )
     }
 }
