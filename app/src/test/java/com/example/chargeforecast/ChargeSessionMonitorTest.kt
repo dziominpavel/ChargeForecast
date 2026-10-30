@@ -320,6 +320,51 @@ class ChargeSessionMonitorTest {
     }
 
     @Test
+    fun restoredSession_seenUnpluggedOnFirstRead_isClearedFromStore() {
+        // Процесс убили во время зарядки, кабель вынули, приложение открыли:
+        // восстановленная сессия обязана закрыться и стереть свой снимок,
+        // иначе следующий запуск воскресит её как активную.
+        val runtime = SessionRuntimeStore(FakeSharedPreferences())
+        val restored = ActiveSessionSnapshot(
+            id = "restored-session",
+            bootCount = 127,
+            startedAtMs = 1_000L,
+            startLevelPct = 50,
+            chargeType = ChargeType.USB,
+            ccSpeedSum = 0f,
+            ccSampleCount = 0,
+            peakCurrentUa = null,
+            lastLevelPct = 55,
+            lastUpdatedAtMs = 2_000L
+        )
+        runtime.saveActiveSession(restored)
+        // Первый же замер после старта процесса — уже без кабеля:
+        // промежуточного null-состояния, которое записало бы снимок
+        // в persister, не будет.
+        val snapshots = MutableStateFlow<BatterySnapshot?>(
+            snap(3_000L, 55, plugged = false)
+        )
+        val monitor = ChargeSessionMonitor(
+            snapshots,
+            CoroutineScope(Dispatchers.Unconfined),
+            { 3_000L },
+            SessionCache(FakeSharedPreferences()),
+            DischargeEstimator(),
+            runtime,
+            bootCount = 127,
+            initialSnapshot = restored
+        )
+
+        val idle = await(monitor) { it.snapshot?.levelPct == 55 && !it.isPlugged }
+
+        assertTrue("первый замер без кабеля должен закрыть сессию", !idle.isPlugged)
+        assertNull(
+            "снимок закрытой сессии не должен переживать перезапуск",
+            runtime.loadActiveSession()
+        )
+    }
+
+    @Test
     fun errorReportedBeforeUiSubscription_isDeliveredOnce() = runBlocking {
         val monitor = monitor(MutableStateFlow(null)) { 0L }
 

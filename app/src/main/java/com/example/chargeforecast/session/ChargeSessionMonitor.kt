@@ -89,7 +89,11 @@ class ChargeSessionMonitor(
         // передал null. Невалидный снимок стираем, чтобы он не всплывал
         // при каждом запуске.
         initialSnapshot?.let {
-            if (!engine.restoreActiveSession(it, clock())) {
+            if (engine.restoreActiveSession(it, clock())) {
+                // Если первый замер придёт уже без кабеля, сессия закроется
+                // и persister должен знать о её снимке, чтобы стереть его.
+                activeSessionPersister.adopt(it)
+            } else {
                 runtimeStore?.clearActiveSession()
             }
         }

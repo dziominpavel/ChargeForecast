@@ -22,6 +22,15 @@ internal class ActiveSessionPersister(
     private var lastLevelPct: Int? = null
     private var lastWrittenAtMs: Long? = null
 
+    // Принять восстановленную сессию, не перезаписывая prefs. Иначе первый
+    // persist(null) после её закрытия не поймёт, что снимок уже лежит
+    // в хранилище с прошлого процесса, и оставит его воскресать.
+    fun adopt(snapshot: ActiveSessionSnapshot) {
+        lastSessionId = snapshot.id
+        lastLevelPct = snapshot.lastLevelPct
+        lastWrittenAtMs = snapshot.lastUpdatedAtMs
+    }
+
     fun persist(snapshot: ActiveSessionSnapshot?) {
         if (snapshot == null) {
             if (lastSessionId != null) {

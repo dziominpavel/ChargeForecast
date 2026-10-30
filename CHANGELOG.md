@@ -14,6 +14,7 @@
 - После перезагрузки оценка разряда больше не смешивает замеры прошлой загрузки — окно начинается заново.
 - Если система убила приложение во время зарядки, сессия продолжается с прежнего старта, а не начинается с текущего процента.
 - Незавершённая зарядка после перезагрузки закрывается по последнему уровню и сохраняется в сводке без дублей.
+- Закрытая сессия зарядки больше не восстанавливается как активная после перезапуска приложения.
 - Ошибка запуска слежения больше не теряется до открытия экрана.
 - Виджет больше не показывает застывший отсчёт, когда слежение остановлено.
 
@@ -36,6 +37,7 @@
 - `SessionCache.finalizeActiveSession()` идемпотентна по `SessionSummary.id`; сводка после ребута/отключения при мёртвом процессе пишется один раз и не дублирует историю.
 - Backup: `session_runtime.xml` и `discharge-journal.txt` исключены в `backup_rules.xml` и `data_extraction_rules.xml`; `charge_session_cache` переносится.
 - Тесты: `BootIdentityTest`, `SessionRuntimeStoreTest`, `ActiveSessionPersisterTest`; расширены `DischargeEstimatorTest`, `SessionEngineTest`, `SessionCacheTest`, `CcPhaseAccumulatorTest`, `ChargeSessionMonitorTest` (225/225 JVM-тестов).
+- `ActiveSessionPersister.adopt()`: восстановленный снимок принимается без перезаписи, поэтому первый `persist(null)` после закрытия сессии стирает его; регрессия `ChargeSessionMonitorTest.restoredSession_seenUnpluggedOnFirstRead_isClearedFromStore`. Проверено на Huawei MNA-L29 (EMUI 12): force-stop → кабель вынут → запуск стирает снимок, следующая вставка стартует новую сессию. Полный прогон — 246/246.
 
 ## [0.5.0] — 2026-10-15 (MINOR)
 
