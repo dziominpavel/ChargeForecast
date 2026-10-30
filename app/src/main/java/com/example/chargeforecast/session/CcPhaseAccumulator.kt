@@ -26,6 +26,16 @@ class CcPhaseAccumulator(
     fun averagePctPerMin(): Float? =
         if (sampleCount == 0) null else speedSum / sampleCount
 
+    // Накопления для live-снимка активной сессии: после смерти процесса
+    // средняя CC-скорость должна продолжиться, а не начаться с нуля.
+    fun snapshot(): Pair<Float, Int> = speedSum to sampleCount
+
+    fun restore(speedSum: Float, sampleCount: Int) {
+        val validSum = speedSum.isFinite() && speedSum >= 0f
+        this.speedSum = if (validSum) speedSum else 0f
+        this.sampleCount = if (validSum) sampleCount.coerceAtLeast(0) else 0
+    }
+
     fun reset() {
         speedSum = 0f
         sampleCount = 0

@@ -48,7 +48,10 @@ class ChargeSessionMonitor(
     scope: CoroutineScope,
     clock: () -> Long = SystemClock::elapsedRealtime,
     cache: SessionCache? = null,
-    dischargeEstimator: DischargeEstimator? = null
+    dischargeEstimator: DischargeEstimator? = null,
+    runtimeStore: SessionRuntimeStore? = null,
+    bootCount: Int? = null,
+    initialSnapshot: ActiveSessionSnapshot? = null
 ) {
     // Ошибки — события, а не состояние (design D7): replay 0, каждый
     // подписчик получает сообщение ровно один раз. Значением их держать
@@ -58,7 +61,22 @@ class ChargeSessionMonitor(
 
     private val sysfsCapacityUah: Long? by lazy { SysfsCapacity.readDesignCapacityUah() }
     private val engine =
-        SessionEngine(cache, dischargeEstimator) { sysfsCapacityUah }
+        SessionEngine(cache, dischargeEstimator, runtimeStore, bootCount) {
+            sysfsCapacityUah
+        }
+    private val activeSessionPersister = ActiveSessionPersister(runtimeStore)
+
+    init {
+        // Снимок той же загрузки продолжает сессию до первого тика; после
+        // смены загрузки Application уже финализировал старую сессию и
+        // передал null. Невалидный снимок стираем, чтобы он не всплывал
+        // при каждом запуске.
+        initialSnapshot?.let {
+            if (!engine.restoreActiveSession(it, clock())) {
+                runtimeStore?.clearActiveSession()
+            }
+        }
+    }
 
     fun reportError(message: String?) {
         if (message != null) _errors.tryEmit(message)
@@ -93,7 +111,14 @@ class ChargeSessionMonitor(
             // Без этого первая секунда после вставки кабеля считала бы
             // возраст от последнего тика (которого давно не было), а не
             // от подключения.
-            engine.update(snapshot, maxOf(nowMs, snapshot?.timestampMs ?: 0L))
+            val state = engine.update(
+                snapshot,
+                maxOf(nowMs, snapshot?.timestampMs ?: 0L)
+            )
+            // Снимок пишется с троттлингом: после kill сессия продолжится
+            // с отставанием не более 30 секунд.
+            activeSessionPersister.persist(engine.snapshotActiveSession())
+            state
         }.stateIn(scope, SharingStarted.Eagerly, engine.update(null, clock()))
 
     companion object {

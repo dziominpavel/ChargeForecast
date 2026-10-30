@@ -5,6 +5,21 @@
 
 ## [Unreleased]
 
+**Исправлено**
+- После перезагрузки оценка разряда больше не смешивает замеры прошлой загрузки — окно начинается заново.
+- Если система убила приложение во время зарядки, сессия продолжается с прежнего старта, а не начинается с текущего процента.
+- Незавершённая зарядка после перезагрузки закрывается по последнему уровню и сохраняется в сводке без дублей.
+
+### Исправлено
+- Change: `preserve-session-data`.
+- `BootIdentity` (`session/BootIdentity.kt`): `Settings.Global.BOOT_COUNT` + wall-clock/elapsed anchor; сравнение загрузок с консервативным fallback по `elapsedRealtime`, когда номер недоступен.
+- `SessionRuntimeStore` (`session/SessionRuntimeStore.kt`): отдельный `session_runtime` prefs для boot identity, окна разряда, live-снимка активной сессии и ёмкости; `SessionCache` оставлен для сводки, истории и кривой.
+- `DischargeEstimator`: `DischargeState.bootCount`; `restore(state, currentBootCount, nowElapsedMs)` отбрасывает сэмплы чужой загрузки, `prune` сортирует/валидирует корзины и отбрасывает метки из будущего.
+- `SessionEngine`: `snapshotActiveSession()`/`restoreActiveSession()` сохраняют старт, уровни, тип, пик и CC-накопления; `ActiveSessionPersister` пишет снимок не чаще раза в 30 с, на старте/границах уровня/финише — сразу.
+- `SessionCache.finalizeActiveSession()` идемпотентна по `SessionSummary.id`; сводка после ребута/отключения при мёртвом процессе пишется один раз и не дублирует историю.
+- Backup: `session_runtime.xml` и `discharge-journal.txt` исключены в `backup_rules.xml` и `data_extraction_rules.xml`; `charge_session_cache` переносится.
+- Тесты: `BootIdentityTest`, `SessionRuntimeStoreTest`, `ActiveSessionPersisterTest`; расширены `DischargeEstimatorTest`, `SessionEngineTest`, `SessionCacheTest`, `CcPhaseAccumulatorTest`, `ChargeSessionMonitorTest` (225/225 JVM-тестов).
+
 ## [0.5.0] — 2026-10-15 (MINOR)
 
 **Добавлено**

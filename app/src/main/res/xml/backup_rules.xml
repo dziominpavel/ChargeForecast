@@ -1,10 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
     Правила Auto Backup для Android 11 и ниже.
-    Пользовательских данных для бэкапа нет (история не хранится).
-    Кэши и no_backup исключаются Android-ом по умолчанию.
+    Переносимая часть — сводка, история и кривая (charge_session_cache).
+    Машинное состояние (session_runtime) и журнал наблюдений привязаны
+    к конкретной загрузке/батарее и не переносятся на другое устройство.
 
     Для Android 12+ используется res/xml/data_extraction_rules.xml.
 -->
 <full-backup-content>
+    <exclude domain="sharedpref" path="session_runtime.xml" />
+    <exclude domain="file" path="discharge-journal.txt" />
 </full-backup-content>

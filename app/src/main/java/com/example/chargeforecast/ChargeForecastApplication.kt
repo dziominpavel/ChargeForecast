@@ -4,8 +4,10 @@ import android.app.Application
 import com.example.chargeforecast.battery.BatteryMonitor
 import com.example.chargeforecast.forecast.DischargeEstimator
 import com.example.chargeforecast.forecast.DischargeJournal
+import com.example.chargeforecast.session.BootIdentity
 import com.example.chargeforecast.session.ChargeSessionMonitor
 import com.example.chargeforecast.session.SessionCache
+import com.example.chargeforecast.session.SessionRuntimeStore
 import com.example.chargeforecast.widget.BatteryWidgetUpdater
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -30,6 +32,11 @@ class ChargeForecastApplication : Application() {
     lateinit var sessionCache: SessionCache
         private set
 
+    // Машинное состояние: boot identity, окно разряда, ёмкость и live-снимок
+    // активной сессии. Отдельный prefs-файл, исключённый из backup.
+    lateinit var sessionRuntimeStore: SessionRuntimeStore
+        private set
+
     // Накопитель расхода — свойство процесса, не сессии: живёт дольше
     // любой одной зарядки и восстанавливается после убийства процесса.
     lateinit var dischargeEstimator: DischargeEstimator
@@ -44,18 +51,49 @@ class ChargeForecastApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        val bootIdentity = BootIdentity.current(this)
         sessionCache = SessionCache.create(this)
+        sessionRuntimeStore = SessionRuntimeStore.create(this)
+        sessionRuntimeStore.saveBootIdentity(bootIdentity)
+
         dischargeJournal = DischargeJournal(File(filesDir, JOURNAL_FILE_NAME))
         dischargeEstimator = DischargeEstimator(
-            onPersist = { sessionCache.saveDischarge(it) },
-            onObservation = dischargeJournal::onObservation
-        ).also { it.restore(sessionCache.loadDischarge()) }
+            onPersist = { sessionRuntimeStore.saveDischarge(it) },
+            onObservation = dischargeJournal::onObservation,
+            initialBootCount = bootIdentity.bootCount
+        ).also {
+            it.restore(
+                state = sessionRuntimeStore.loadDischarge(),
+                currentBootCount = bootIdentity.bootCount,
+                nowElapsedMs = bootIdentity.elapsedRealtimeMs
+            )
+        }
+
+        // Политика восстановления: смерть процесса в той же загрузке —
+        // продолжаем сессию; ребут или backup — закрываем старую по
+        // последнему уровню и стартуем без неё.
+        val pendingSession = sessionRuntimeStore.loadActiveSession()
+        val resumeSession = pendingSession?.takeIf {
+            BootIdentity.sameBoot(
+                savedBootCount = it.bootCount,
+                savedElapsedRealtimeMs = it.lastUpdatedAtMs,
+                currentBootCount = bootIdentity.bootCount,
+                currentElapsedRealtimeMs = bootIdentity.elapsedRealtimeMs
+            )
+        }
+        if (pendingSession != null && resumeSession == null) {
+            sessionCache.finalizeActiveSession(pendingSession, sessionRuntimeStore)
+        }
+
         batteryMonitor = BatteryMonitor(this, appScope)
         sessionMonitor = ChargeSessionMonitor(
             batteryMonitor.snapshots,
             appScope,
             cache = sessionCache,
-            dischargeEstimator = dischargeEstimator
+            dischargeEstimator = dischargeEstimator,
+            runtimeStore = sessionRuntimeStore,
+            bootCount = bootIdentity.bootCount,
+            initialSnapshot = resumeSession
         )
         batteryMonitor.start()
         // Виджет получает то же состояние, что экран и сервис — одним

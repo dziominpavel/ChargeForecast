@@ -17,6 +17,7 @@ import com.example.chargeforecast.forecast.InstantSpeedEstimator
 import com.example.chargeforecast.forecast.SpeedFusion
 import com.example.chargeforecast.forecast.TaperCurve
 import com.example.chargeforecast.forecast.TaperCurveLearner
+import java.util.UUID
 
 // Чистый движок сессии (см. design фазы 1): все расчёты от переданной
 // монотонной метки времени (elapsedRealtime — подстройка системных
@@ -27,6 +28,10 @@ import com.example.chargeforecast.forecast.TaperCurveLearner
 internal class SessionEngine(
     private val cache: SessionCache? = null,
     private val dischargeEstimator: DischargeEstimator? = null,
+    // Волатильное хранилище: ёмкость и live-снимок активной сессии.
+    private val runtimeStore: SessionRuntimeStore? = null,
+    // Номер загрузки, в которой работает движок; null — BOOT_COUNT недоступен.
+    private val bootCount: Int? = null,
     private val sysfsCapacityUah: () -> Long? = { null }
 ) {
     private val calculator = ChargeSpeedCalculator()
@@ -41,10 +46,18 @@ internal class SessionEngine(
 
     private var plugDetectedAtMs: Long? = null
     private var sessionStartLevelPct: Int? = null
+    // UUID активной сессии — для идемпотентной финализации сводки.
+    private var sessionId: String? = null
     // Тип подключения сессии — фиксируется в секунду ноль (кабель
     // вставлен → реальный AC/USB/Wireless). В момент отключения снапшот
     // уже NONE, поэтому тип для сводки/истории храним отдельно.
     private var sessionChargeType: ChargeType? = null
+    // Последний уровень и время тика: из них собирается live-снимок.
+    private var lastLevelPct: Int? = null
+    private var lastUpdatedAtMs: Long? = null
+    // Сессия восстановлена из снимка и ещё не видела живого тика: если
+    // кабель уже отключён, сводка считается по сохранённым уровню/времени.
+    private var restoredFromSnapshot = false
     // Опора истории сессии — медиана прошлых сессий типа или дефолтный
     // приор подключения. Читается один раз в секунду ноль и держится
     // до конца сессии (заморозка).
@@ -72,14 +85,24 @@ internal class SessionEngine(
             if (plugDetectedAtMs != null) {
                 // Сессия кончилась — сводка, история и ёмкость пишутся
                 // ОДИН раз, именно здесь; во время сессии кэш прошлой
-                // не трогаем.
-                lastCapacityUah?.let { cache?.saveCapacity(it) }
-                buildSummary(snapshot, nowMs)?.let { summary ->
-                    cache?.saveSummary(summary)
-                    // История тем же гейтом, что и сводка: buildSummary
-                    // вернул null → в буфер ничего не попало.
-                    summary.chargeType?.let { type ->
-                        cache?.appendHistory(type, summary.avgCcSpeedPctPerMin)
+                // не трогаем. Повторная запись после смерти процесса не
+                // создаёт дубль: id уже сохранённой сводки совпадает.
+                lastCapacityUah?.let { runtimeStore?.saveCapacity(it) }
+                buildSummary(
+                    snapshot = snapshot,
+                    nowMs = nowMs,
+                    fromSnapshot = restoredFromSnapshot
+                )?.let { summary ->
+                    val existingSummaryId = cache?.loadSummary()?.id
+                    val alreadyFinalized =
+                        existingSummaryId != null && existingSummaryId == summary.id
+                    if (!alreadyFinalized) {
+                        cache?.saveSummary(summary)
+                        // История тем же гейтом, что и сводка: buildSummary
+                        // вернул null → в буфер ничего не попало.
+                        summary.chargeType?.let { type ->
+                            cache?.appendHistory(type, summary.avgCcSpeedPctPerMin)
+                        }
                     }
                 }
                 // Обученная кривая профиля: слияние с прежней, персист.
@@ -88,6 +111,7 @@ internal class SessionEngine(
                     cache?.saveCurve(type, TaperCurve.merge(taperFactors, learned))
                 }
             }
+            restoredFromSnapshot = false
             resetSession()
             // Снапшот сохраняем: в простое он единственный источник уровня
             // заряда для виджета (режим разряда показывает, сколько осталось
@@ -95,11 +119,16 @@ internal class SessionEngine(
             // меняется — снапшот разрядный.
             return idle(snapshot, dischargeEstimate(snapshot, nowMs))
         }
+        // Пришёл живой тик с кабелем — дальше опираемся на текущие данные.
+        restoredFromSnapshot = false
         if (plugDetectedAtMs == null) {
             // Секунда ноль: кабель подключён (переход isPlugged).
             plugDetectedAtMs = nowMs
             sessionStartLevelPct = snapshot.levelPct
             sessionChargeType = snapshot.chargeType
+            sessionId = UUID.randomUUID().toString()
+            lastLevelPct = snapshot.levelPct
+            lastUpdatedAtMs = nowMs
             // Опора первой секунды: медиана истории прошлых сессий типа,
             // а при чистой установке — дефолтный приор по типу подключения
             // (спека charge-forecast). Один раз на сессию; внутри сессии
@@ -111,6 +140,8 @@ internal class SessionEngine(
                 ?: TaperCurve.DEFAULT_FACTORS
             linearBaseRatePctPerMin = null
         }
+        lastLevelPct = snapshot.levelPct
+        lastUpdatedAtMs = nowMs
         val start = plugDetectedAtMs ?: nowMs
         val age = (nowMs - start).coerceAtLeast(0L)
 
@@ -124,11 +155,11 @@ internal class SessionEngine(
         val liveCapacity = capacityTracker.update(
             snapshot.chargeCounterUah, snapshot.levelPct
         )
-        if (liveCapacity != null) {
+        if (liveCapacity != null && liveCapacity != lastCapacityUah) {
             lastCapacityUah = liveCapacity
-            cache?.saveCapacity(liveCapacity)
+            runtimeStore?.saveCapacity(liveCapacity)
         }
-        val capacityUah = liveCapacity ?: sysfsCapacityUah() ?: cache?.loadCapacity()
+        val capacityUah = liveCapacity ?: sysfsCapacityUah() ?: runtimeStore?.loadCapacity()
 
         val currentUa = snapshot.currentMa?.let { (it * 1000f).toLong() }
         if (currentUa != null && currentUa > 0) {
@@ -246,6 +277,74 @@ internal class SessionEngine(
         return estimator.estimate(snapshot.levelPct, snapshot.chargeCounterUah, nowMs)
     }
 
+    // Live-снимок активной сессии для SessionRuntimeStore. null — сессии
+    // нет (простой или ещё не было тика с кабелем).
+    fun snapshotActiveSession(): ActiveSessionSnapshot? {
+        val start = plugDetectedAtMs ?: return null
+        val id = sessionId ?: return null
+        val (ccSpeedSum, ccSampleCount) = ccAccumulator.snapshot()
+        return ActiveSessionSnapshot(
+            id = id,
+            bootCount = bootCount,
+            startedAtMs = start,
+            startLevelPct = sessionStartLevelPct ?: lastLevelPct ?: 0,
+            chargeType = sessionChargeType ?: ChargeType.UNKNOWN,
+            ccSpeedSum = ccSpeedSum,
+            ccSampleCount = ccSampleCount,
+            peakCurrentUa = peakCurrentUa,
+            lastLevelPct = lastLevelPct ?: sessionStartLevelPct ?: 0,
+            lastUpdatedAtMs = lastUpdatedAtMs ?: start
+        )
+    }
+
+    // Восстановление активной сессии после смерти процесса. Снимок чужой
+    // загрузки отклоняется: склейка через ребут запрещена. Транзиентные
+    // спидометры, EMA и фильтр показа сбрасываются — они пересоберутся
+    // с первых секунд, а старт, уровни, тип и CC-средняя сохраняются.
+    fun restoreActiveSession(
+        snapshot: ActiveSessionSnapshot,
+        nowElapsedMs: Long
+    ): Boolean {
+        if (snapshot.lastUpdatedAtMs > nowElapsedMs) return false
+        if (snapshot.startedAtMs > snapshot.lastUpdatedAtMs) return false
+        if (!BootIdentity.sameBoot(
+                savedBootCount = snapshot.bootCount,
+                savedElapsedRealtimeMs = snapshot.lastUpdatedAtMs,
+                currentBootCount = bootCount,
+                currentElapsedRealtimeMs = nowElapsedMs
+            )
+        ) {
+            return false
+        }
+        sessionId = snapshot.id
+        plugDetectedAtMs = snapshot.startedAtMs
+        sessionStartLevelPct = snapshot.startLevelPct
+        sessionChargeType = snapshot.chargeType
+        peakCurrentUa = snapshot.peakCurrentUa
+        lastLevelPct = snapshot.lastLevelPct
+        lastUpdatedAtMs = snapshot.lastUpdatedAtMs
+        restoredFromSnapshot = true
+        // Опора истории и кривая — из кэша, как в секунду ноль.
+        historyBaseRatePctPerMin = cache?.loadHistoryMedian(snapshot.chargeType)
+            ?: ChargePrior.ratePctPerMin(snapshot.chargeType)
+        taperFactors = cache?.loadCurve(snapshot.chargeType) ?: TaperCurve.DEFAULT_FACTORS
+        ccAccumulator.restore(snapshot.ccSpeedSum, snapshot.ccSampleCount)
+        // Транзиенты не восстанавливаем: неполный снимок опаснее короткого
+        // разгона после kill.
+        emaCurrentUa = null
+        lastEmaSampleMs = null
+        lastCapacityUah = null
+        linearBaseRatePctPerMin = null
+        baseRateEmaPctPerMin = null
+        calculator.reset()
+        counterShort.reset()
+        counterLong.reset()
+        capacityTracker.reset()
+        displayFilter.reset()
+        curveLearner.reset()
+        return true
+    }
+
     private fun idle(
         snapshot: BatterySnapshot? = null,
         discharge: DischargeEstimate = DischargeEstimate.NONE
@@ -264,7 +363,11 @@ internal class SessionEngine(
     private fun resetSession() {
         plugDetectedAtMs = null
         sessionStartLevelPct = null
+        sessionId = null
         sessionChargeType = null
+        lastLevelPct = null
+        lastUpdatedAtMs = null
+        restoredFromSnapshot = false
         historyBaseRatePctPerMin = null
         emaCurrentUa = null
         lastEmaSampleMs = null
@@ -287,20 +390,31 @@ internal class SessionEngine(
     // Без накопленных сэмплов сводки нет — приор прошлой не портится.
     // Короткие (<2% набора) и околонулевые сессии сводку не пишут:
     // мусорная тишина не должна становиться приором следующей.
-    private fun buildSummary(snapshot: BatterySnapshot, nowMs: Long): SessionSummary? {
+    //
+    // fromSnapshot: кабель отключили, пока процесс был мёртв. Тогда
+    // текущий уровень уже успел разрядиться, а честный конец сессии —
+    // последний сохранённый тик.
+    private fun buildSummary(
+        snapshot: BatterySnapshot,
+        nowMs: Long,
+        fromSnapshot: Boolean
+    ): SessionSummary? {
         val startMs = plugDetectedAtMs ?: return null
         val avg = ccAccumulator.averagePctPerMin() ?: return null
         if (avg < SUMMARY_MIN_AVG_PCT_PER_MIN) return null
         val startLevel = sessionStartLevelPct ?: snapshot.levelPct
-        val gained = (snapshot.levelPct - startLevel).coerceAtLeast(0)
+        val endMs = if (fromSnapshot) lastUpdatedAtMs ?: nowMs else nowMs
+        val endLevel = if (fromSnapshot) lastLevelPct ?: snapshot.levelPct else snapshot.levelPct
+        val gained = (endLevel - startLevel).coerceAtLeast(0)
         if (gained < SUMMARY_MIN_GAINED_PCT) return null
         return SessionSummary(
-            endedAtMs = nowMs,
-            durationMs = (nowMs - startMs).coerceAtLeast(0L),
+            endedAtMs = endMs,
+            durationMs = (endMs - startMs).coerceAtLeast(0L),
             gainedPct = gained,
             avgCcSpeedPctPerMin = avg,
             peakCurrentMa = peakCurrentUa?.let { it / 1000f },
-            chargeType = sessionChargeType ?: snapshot.chargeType
+            chargeType = sessionChargeType ?: snapshot.chargeType,
+            id = sessionId
         )
     }
 

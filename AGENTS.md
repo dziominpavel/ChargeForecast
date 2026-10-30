@@ -17,7 +17,7 @@ Android-приложение на **Kotlin** для отслеживания п�
 ### Стек
 - **Язык:** Kotlin
 - **UI:** Jetpack Compose, Material 3
-- **Данные:** SharedPreferences через `SessionCache` (ёмкость, сводка прошлой сессии, кривая доводки по типу подключения, кольцо интервалов разряда за сутки)
+- **Данные:** SharedPreferences через `SessionCache` (сводка прошлой сессии, кривая доводки по типу подключения, история) и `SessionRuntimeStore` (ёмкость, кольцо интервалов разряда, boot identity, live-снимок активной сессии)
 - **Архитектура:** один модуль `:app`, ручная навигация (без Navigation Component)
 - **Тема:** палитра «Volt» — тёмный фон (Obsidian/Carbon) + единственный акцент Electric Volt (`#D1FF00`); токены в `ui/theme/` (`Color.kt`, `Type.kt`, `Theme.kt`)
 
@@ -27,7 +27,7 @@ Android-приложение на **Kotlin** для отслеживания п�
 - Состояние сессии: `session/ChargeSessionMonitor.state` — единственный источник для экрана, сервиса и виджета; движок `session/SessionEngine` один на процесс
 - Фоновое слежение: `service/ChargeForecastService` (foreground `specialUse`), `service/BootCompletedReceiver`; уведомление статично, канал `IMPORTANCE_NONE` (откат — `IMPORTANCE_MIN`)
 - Виджет: `widget/WidgetText` (выбор режима и бакета размера, тестируется на JVM), `widget/BatteryWidgetProvider` (отрисовка каждой ячейки по её бакету), `widget/BatteryWidgetUpdater` (push с троттлингом 15 с)
-- Оценка разряда: `forecast/DischargeEstimator` — среднее `ΣdU ÷ Σdt` по кольцу интервалов за скользящие 24 ч, только на `!isPlugged` и только по дельте счётчика заряда, порог входа 2 ч; персист в `SessionCache`; журнал наблюдений — `forecast/DischargeJournal` (`files/discharge-journal.txt`)
+- Оценка разряда: `forecast/DischargeEstimator` — среднее `ΣdU ÷ Σdt` по кольцу интервалов за скользящие 24 ч, только на `!isPlugged` и только по дельте счётчика заряда, порог входа 2 ч; персист в `SessionRuntimeStore` (вне backup); журнал наблюдений — `forecast/DischargeJournal` (`files/discharge-journal.txt`)
 - Версия: файл `version` (меняет только release-скрипт); автобампа при сборке нет
 
 ### Дорожная карта (наращивается в следующих сессиях)

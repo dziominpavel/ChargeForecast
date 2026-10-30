@@ -1,11 +1,12 @@
 package com.example.chargeforecast
 
 import com.example.chargeforecast.battery.ChargeType
-import com.example.chargeforecast.forecast.DischargeSample
-import com.example.chargeforecast.forecast.DischargeState
+import com.example.chargeforecast.session.ActiveSessionSnapshot
 import com.example.chargeforecast.session.SessionCache
+import com.example.chargeforecast.session.SessionRuntimeStore
 import com.example.chargeforecast.session.SessionSummary
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -32,6 +33,27 @@ class SessionCacheTest {
         assertNull(cache.loadSummary())
         cache.saveSummary(summary())
         assertEquals(summary(), cache.loadSummary())
+    }
+
+    @Test
+    fun summary_withSessionId_roundTrip() {
+        val cache = SessionCache(FakeSharedPreferences())
+        cache.saveSummary(summary().copy(id = "session-42"))
+        assertEquals("session-42", cache.loadSummary()!!.id)
+    }
+
+    @Test
+    fun summary_withoutId_loadsAsLegacy() {
+        // Старая запись не содержит summary_id — это не ошибка.
+        val prefs = FakeSharedPreferences()
+        prefs.edit()
+            .putLong("summary_ended_ms", 1_000L)
+            .putLong("summary_duration_ms", 2_000L)
+            .putInt("summary_gained_pct", 10)
+            .putFloat("summary_avg_cc_speed", 1.2f)
+            .putString("summary_charge_type", ChargeType.AC.name)
+            .apply()
+        assertNull(SessionCache(prefs).loadSummary()!!.id)
     }
 
     @Test
@@ -62,14 +84,6 @@ class SessionCacheTest {
         assertEquals(1.5f, cache.loadSummary()!!.avgCcSpeedPctPerMin, 1e-6f)
         cache.saveSummary(summary(avgCcSpeed = 0.9f))
         assertEquals(0.9f, cache.loadSummary()!!.avgCcSpeedPctPerMin, 1e-6f)
-    }
-
-    @Test
-    fun capacity_roundTrip() {
-        val cache = SessionCache(FakeSharedPreferences())
-        cache.saveCapacity(4_000_000L)
-        assertEquals(4_000_000L, cache.loadCapacity()!!)
-        assertNull(cache.loadSummary())
     }
 
     @Test
@@ -161,94 +175,99 @@ class SessionCacheTest {
     }
 
     @Test
-    fun discharge_roundTrip() {
-        // Кольцо интервалов окна переживает запись и чтение целиком —
-        // оценка продолжается от прежней базы, а не с нуля.
-        val cache = SessionCache(FakeSharedPreferences())
-        assertNull(cache.loadDischarge())
-        val state = DischargeState(
-            samples = listOf(
-                DischargeSample(atMs = 8_100_000L, durationMs = 900_000L, dischargedUah = 100_000L),
-                DischargeSample(atMs = 9_000_000L, durationMs = 900_000L, dischargedUah = 95_000L)
-            ),
-            lastSampleMs = 9_000_000L,
-            lastCounterUah = 1_840_000L
-        )
-        cache.saveDischarge(state)
-        assertEquals(state, cache.loadDischarge())
-    }
-
-    @Test
-    fun discharge_survivesProcessKill() {
-        // OEM-оболочка убила процесс: SharedPreferences — тот же файл, но
-        // экземпляры кэша новые. Накопление восстановлено, база прежняя.
+    fun finalizeActiveSession_writesSummaryOnce_withIdAndHistory() {
         val prefs = FakeSharedPreferences()
-        SessionCache(prefs).saveDischarge(
-            DischargeState(
-                samples = listOf(
-                    DischargeSample(atMs = 1_500_000L, durationMs = 1_500_000L, dischargedUah = 120_000L)
-                ),
-                lastSampleMs = 1_500_000L,
-                lastCounterUah = 2_000_000L
-            )
+        val runtimePrefs = FakeSharedPreferences()
+        val cache = SessionCache(prefs)
+        val runtime = SessionRuntimeStore(runtimePrefs)
+        val snapshot = activeSnapshot(
+            id = "session-1",
+            startLevel = 40,
+            lastLevel = 55,
+            ccSpeedSum = 15f,
+            ccSampleCount = 10
         )
-        val restored = SessionCache(prefs).loadDischarge()!!
-        assertEquals(1_500_000L, restored.lastSampleMs)
-        assertEquals(2_000_000L, restored.lastCounterUah)
-        assertEquals(1, restored.samples.size)
-        assertEquals(120_000L, restored.samples.first().dischargedUah)
+        runtime.saveActiveSession(snapshot)
+
+        val summary = cache.finalizeActiveSession(snapshot, runtime)!!
+
+        assertEquals("session-1", summary.id)
+        assertEquals(15, summary.gainedPct)
+        assertEquals(1.5f, summary.avgCcSpeedPctPerMin, 1e-6f)
+        assertEquals(summary, cache.loadSummary())
+        assertEquals(1.5f, cache.loadHistoryMedian(ChargeType.AC)!!, 1e-6f)
+        assertNull(runtime.loadActiveSession())
     }
 
     @Test
-    fun discharge_emptyWindowAndNullAnchors_areNotConfusedWithValues() {
-        // Пустое окно и null-якоря — не нули: null и 0 разное.
+    fun finalizeActiveSession_repeatDoesNotDuplicateHistory() {
         val cache = SessionCache(FakeSharedPreferences())
-        cache.saveDischarge(DischargeState(emptyList(), null, null))
-        val loaded = cache.loadDischarge()!!
-        assertEquals(emptyList<DischargeSample>(), loaded.samples)
-        assertNull(loaded.lastSampleMs)
-        assertNull(loaded.lastCounterUah)
+        val runtime = SessionRuntimeStore(FakeSharedPreferences())
+        listOf(1.0f, 1.1f, 1.2f, 1.3f, 1.4f).forEach {
+            cache.appendHistory(ChargeType.AC, it)
+        }
+        val snapshot = activeSnapshot(id = "session-1", ccSpeedSum = 20f, ccSampleCount = 10)
+        runtime.saveActiveSession(snapshot)
+
+        cache.finalizeActiveSession(snapshot, runtime)
+        // Буфер [1.1, 1.2, 1.3, 1.4, 2.0] — медиана 1.3.
+        assertEquals(1.3f, cache.loadHistoryMedian(ChargeType.AC)!!, 1e-6f)
+
+        runtime.saveActiveSession(snapshot)
+        cache.finalizeActiveSession(snapshot, runtime)
+        // Повторная финализация не добавляет 2.0 второй раз:
+        // иначе буфер стал бы [1.2, 1.3, 1.4, 2.0, 2.0] с медианой 1.4.
+        assertEquals(1.3f, cache.loadHistoryMedian(ChargeType.AC)!!, 1e-6f)
     }
 
     @Test
-    fun discharge_oldScalarKeysIgnored() {
-        // Прежние четыре скаляра накопителя не читаются: окно начинается
-        // пустым, а не с устаревшего сглаженного тока (design D9).
-        val prefs = FakeSharedPreferences()
-        prefs.edit()
-            .putFloat("discharge_smoothed_ua", 412_500f)
-            .putLong("discharge_tracked_ms", 7_200_000L)
-            .putLong("discharge_last_sample_ms", 1_500_000L)
-            .putLong("discharge_last_counter_uah", 2_000_000L)
-            .apply()
-        assertNull(SessionCache(prefs).loadDischarge())
-    }
-
-    @Test
-    fun discharge_corruptSampleStringDecodesToEmpty() {
-        // Повреждённая строка не роняет приложение и не даёт ложных
-        // интервалов: интервалы просто отсутствуют.
-        val prefs = FakeSharedPreferences()
-        prefs.edit().putString("discharge_samples_v2", "broken:entry;12:xx:34").apply()
-        val loaded = SessionCache(prefs).loadDischarge()!!
-        assertEquals(emptyList<DischargeSample>(), loaded.samples)
-    }
-
-    @Test
-    fun discharge_notTouchedByOtherCacheWrites() {
-        // Сводка, ёмкость и кривые не затирают накопление расхода.
+    fun finalizeActiveSession_belowGate_clearsSnapshotWithoutSummary() {
         val cache = SessionCache(FakeSharedPreferences())
-        val state = DischargeState(
-            samples = listOf(
-                DischargeSample(atMs = 1_500_000L, durationMs = 1_500_000L, dischargedUah = 120_000L)
-            ),
-            lastSampleMs = 1_500_000L,
-            lastCounterUah = 2_000_000L
-        )
-        cache.saveDischarge(state)
-        cache.saveSummary(summary())
-        cache.saveCapacity(4_000_000L)
-        cache.appendHistory(ChargeType.AC, 1.2f)
-        assertEquals(state, cache.loadDischarge())
+        val runtime = SessionRuntimeStore(FakeSharedPreferences())
+        // Набрано всего 1% — порог сводки не пройден.
+        val snapshot = activeSnapshot(id = "short", startLevel = 50, lastLevel = 51)
+        runtime.saveActiveSession(snapshot)
+
+        assertNull(cache.finalizeActiveSession(snapshot, runtime))
+        assertNull(cache.loadSummary())
+        assertNull(runtime.loadActiveSession())
     }
+
+    @Test
+    fun portableCache_keepsNoRuntimeKeys() {
+        // session_runtime.xml исключён из backup; в charge_session_cache
+        // не должно появиться машинных ключей.
+        val prefs = FakeSharedPreferences()
+        val cache = SessionCache(prefs)
+        val runtime = SessionRuntimeStore(FakeSharedPreferences())
+        val snapshot = activeSnapshot(id = "session-runtime-keys")
+        runtime.saveActiveSession(snapshot)
+        cache.finalizeActiveSession(snapshot, runtime)
+        cache.saveCurve(ChargeType.AC, floatArrayOf(1f, 1f, 1f, 1f))
+
+        val keys = prefs.getAll().keys
+        assertFalse(keys.any { it.startsWith("active_session_") })
+        assertFalse(keys.any { it.startsWith("discharge_") })
+        assertFalse(keys.contains("capacity_uah"))
+        assertTrue(keys.contains("summary_avg_cc_speed"))
+    }
+
+    private fun activeSnapshot(
+        id: String,
+        startLevel: Int = 40,
+        lastLevel: Int = 55,
+        ccSpeedSum: Float = 15f,
+        ccSampleCount: Int = 10
+    ) = ActiveSessionSnapshot(
+        id = id,
+        bootCount = 1,
+        startedAtMs = 1_000L,
+        startLevelPct = startLevel,
+        chargeType = ChargeType.AC,
+        ccSpeedSum = ccSpeedSum,
+        ccSampleCount = ccSampleCount,
+        peakCurrentUa = 2_400_000L,
+        lastLevelPct = lastLevel,
+        lastUpdatedAtMs = 1_801_000L
+    )
 }

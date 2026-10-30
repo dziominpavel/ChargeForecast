@@ -7,9 +7,11 @@ import com.example.chargeforecast.forecast.DischargeEstimator
 import com.example.chargeforecast.forecast.ForecastAccuracy
 import com.example.chargeforecast.session.SessionCache
 import com.example.chargeforecast.session.SessionEngine
+import com.example.chargeforecast.session.SessionRuntimeStore
 import com.example.chargeforecast.session.SessionState
 import com.example.chargeforecast.session.SessionSummary
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -548,8 +550,9 @@ class SessionEngineTest {
         // Простой: экран и виджет читают одно и то же состояние сессии —
         // оценка работы берётся из накопленного расхода (design D6).
         val cache = SessionCache(FakeSharedPreferences())
-        cache.saveCapacity(capacity)
-        val engine = SessionEngine(cache, DischargeEstimator())
+        val runtime = SessionRuntimeStore(FakeSharedPreferences())
+        runtime.saveCapacity(capacity)
+        val engine = SessionEngine(cache, DischargeEstimator(), runtime)
 
         // 400 мА: счётчик падает на 100k мкА·ч за 15 минут. Порог входа —
         // 2 часа наблюдаемого времени внутри окна, значит интервалов 8.
@@ -583,8 +586,9 @@ class SessionEngineTest {
         // растёт при разрядке и переворачивает оценку. Ёмкость в кэше
         // есть — старая формула дала бы 34 200 с вместо истинных 1800.
         val cache = SessionCache(FakeSharedPreferences())
-        cache.saveCapacity(capacity)
-        val engine = SessionEngine(cache, DischargeEstimator())
+        val runtime = SessionRuntimeStore(FakeSharedPreferences())
+        runtime.saveCapacity(capacity)
+        val engine = SessionEngine(cache, DischargeEstimator(), runtime)
 
         // 400 мА: восемь интервалов по 15 минут, счётчик падает с 1 млн
         // до 200k мкА·ч — в окне ровно 2 часа, вес приора 0.
@@ -631,5 +635,152 @@ class SessionEngineTest {
         val engine = SessionEngine()
         val state = engine.update(snap(0, 50, plugged = false, charging = false), 0)
         assertEquals(DischargeEstimate.NONE, state.discharge)
+    }
+
+    @Test
+    fun activeSessionSnapshot_continuesAfterProcessKill() {
+        // Процесс убит во время зарядки: новая сессия продолжается с
+        // прежнего старта, а не с текущего процента.
+        val cache = SessionCache(FakeSharedPreferences())
+        val runtime = SessionRuntimeStore(FakeSharedPreferences())
+        val engine = SessionEngine(cache, runtimeStore = runtime, bootCount = 1)
+        var t = 0L
+        while (t <= 5 * 60_000L) {
+            val level = (50 + t / 60_000L).toInt().coerceAtMost(99)
+            engine.update(snap(t, level), t)
+            t += 1_000L
+        }
+        val snapshot = engine.snapshotActiveSession()!!
+        assertEquals(0L, snapshot.startedAtMs)
+        assertEquals(50, snapshot.startLevelPct)
+        assertTrue(snapshot.ccSampleCount > 0)
+
+        val restored = SessionEngine(cache, runtimeStore = runtime, bootCount = 1)
+        assertTrue(restored.restoreActiveSession(snapshot, 5 * 60_000L))
+        val afterRestart = restored.snapshotActiveSession()!!
+        assertEquals(snapshot.id, afterRestart.id)
+        assertEquals(50, afterRestart.startLevelPct)
+        assertEquals(snapshot.startedAtMs, afterRestart.startedAtMs)
+        assertEquals(5 * 60_000L, afterRestart.lastUpdatedAtMs)
+
+        // Первый тик после восстановления снова даёт прогноз.
+        val tick = restored.update(snap(5 * 60_000L + 1_000L, 55), 5 * 60_000L + 1_000L)
+        assertEquals(5 * 60_000L + 1_000L, tick.sessionAgeMs)
+        assertNotNull(tick.forecast.remainingSec)
+
+        // Отключение пишет сводку по прежнему старту: набрано 5%, а не 0.
+        restored.update(
+            snap(5 * 60_000L + 1_000L, 55, plugged = false, charging = false),
+            5 * 60_000L + 1_000L
+        )
+        val summary = cache.loadSummary()!!
+        assertEquals(5, summary.gainedPct)
+        assertEquals(snapshot.id, summary.id)
+        assertEquals(1.0f, summary.avgCcSpeedPctPerMin, 0.05f)
+    }
+
+    @Test
+    fun unplugAfterRestore_writesSummaryOnce_andDoesNotDuplicateHistory() {
+        // Сводка уже записана, но runtime-снимок не успел очиститься
+        // (процесс умер между двумя записями). Повторное восстановление
+        // не пишет вторую сводку и не дублирует историю.
+        val cache = SessionCache(FakeSharedPreferences())
+        listOf(0.6f, 0.7f, 0.8f, 0.9f, 0.95f).forEach {
+            cache.appendHistory(ChargeType.AC, it)
+        }
+        val runtime = SessionRuntimeStore(FakeSharedPreferences())
+        val first = SessionEngine(cache, runtimeStore = runtime, bootCount = 1)
+        var t = 0L
+        while (t <= 5 * 60_000L) {
+            val level = (50 + t / 60_000L).toInt().coerceAtMost(99)
+            first.update(snap(t, level), t)
+            t += 1_000L
+        }
+        val snapshot = first.snapshotActiveSession()!!
+        first.update(
+            snap(5 * 60_000L + 1_000L, 55, plugged = false, charging = false),
+            5 * 60_000L + 1_000L
+        )
+        // Буфер [0.7, 0.8, 0.9, 0.95, ~1.0] — медиана 0.9.
+        assertEquals(0.9f, cache.loadHistoryMedian(ChargeType.AC)!!, 0.01f)
+        // Сводка записана; повторная финализация не должна её перезаписать.
+        val firstSummary = cache.loadSummary()!!
+        assertEquals(5, firstSummary.gainedPct)
+        val historyAfterFirst = cache.loadHistoryMedian(ChargeType.AC)!!
+
+        runtime.saveActiveSession(snapshot)
+        val second = SessionEngine(cache, runtimeStore = runtime, bootCount = 1)
+        assertTrue(second.restoreActiveSession(snapshot, 5 * 60_000L + 2_000L))
+        second.update(
+            snap(5 * 60_000L + 2_000L, 55, plugged = false, charging = false),
+            5 * 60_000L + 2_000L
+        )
+        assertEquals(firstSummary, cache.loadSummary())
+        assertEquals(historyAfterFirst, cache.loadHistoryMedian(ChargeType.AC)!!, 1e-6f)
+    }
+
+    @Test
+    fun unplugWhileProcessDead_summaryUsesSavedLevelAndTime() {
+        // Кабель отключили, пока процесса не было: текущий уровень уже
+        // разрядился, но сводка обязана закрыться по последнему
+        // сохранённому уровню и времени.
+        val cache = SessionCache(FakeSharedPreferences())
+        val runtime = SessionRuntimeStore(FakeSharedPreferences())
+        val first = SessionEngine(cache, runtimeStore = runtime, bootCount = 1)
+        var t = 0L
+        while (t <= 5 * 60_000L) {
+            val level = (50 + t / 60_000L).toInt().coerceAtMost(99)
+            first.update(snap(t, level), t)
+            t += 1_000L
+        }
+        val snapshot = first.snapshotActiveSession()!!
+
+        val second = SessionEngine(cache, runtimeStore = runtime, bootCount = 1)
+        assertTrue(second.restoreActiveSession(snapshot, 60 * 60_000L))
+        // Час без процесса: телефон разрядился до 40%, кабель уже вынут.
+        second.update(
+            snap(
+                60 * 60_000L, 40,
+                counterUah = 1_600_000L,
+                plugged = false,
+                charging = false
+            ),
+            60 * 60_000L
+        )
+
+        val summary = cache.loadSummary()!!
+        assertEquals(
+            "набрано считается по сохранённому уровню 55, а не по текущим 40",
+            5,
+            summary.gainedPct
+        )
+        assertEquals(
+            "конец сессии — последний сохранённый тик, а не время запуска",
+            5 * 60_000L,
+            summary.endedAtMs
+        )
+        assertEquals(5 * 60_000L, summary.durationMs)
+    }
+
+    @Test
+    fun restoreActiveSession_rejectsSnapshotOfAnotherBoot() {
+        // Склейка сессии через ребут запрещена: снимок чужой загрузки
+        // отклоняется, новая сессия начинается с текущего уровня.
+        val runtime = SessionRuntimeStore(FakeSharedPreferences())
+        val first = SessionEngine(runtimeStore = runtime, bootCount = 1)
+        var t = 0L
+        while (t <= 3 * 60_000L) {
+            first.update(snap(t, 50), t)
+            t += 1_000L
+        }
+        val snapshot = first.snapshotActiveSession()!!
+
+        val second = SessionEngine(runtimeStore = runtime, bootCount = 2)
+        assertFalse(second.restoreActiveSession(snapshot, 3 * 60_000L))
+        assertNull(second.snapshotActiveSession())
+
+        val fresh = second.update(snap(10_000L, 60), 10_000L)
+        assertEquals("новая сессия начинается от текущего момента", 0L, fresh.sessionAgeMs)
+        assertTrue(second.snapshotActiveSession()!!.id != snapshot.id)
     }
 }

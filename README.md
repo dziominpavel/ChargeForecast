@@ -27,7 +27,7 @@ Android-приложение для отслеживания зарядки те
 ## Стек
 
 - Kotlin + Jetpack Compose + Material 3
-- SharedPreferences (`SessionCache`: ёмкость, сводка прошлой сессии, кривая доводки по типу подключения, история последних зарядок, кольцо интервалов разряда за сутки; `SettingsCache`: настройки приложения, непрозрачность фона виджета)
+- SharedPreferences (`SessionCache`: сводка прошлой сессии, кривая доводки по типу подключения, история последних зарядок; `SessionRuntimeStore`: ёмкость, кольцо интервалов разряда, boot identity и live-снимок активной сессии; `SettingsCache`: настройки приложения, непрозрачность фона виджета)
 - Один модуль `:app`, ручная навигация
 - Фоновое слежение — foreground service (`specialUse`) без сторонних библиотек; виджет — `RemoteViews`/`AppWidgetProvider`
 - minSdk 29, targetSdk 36, compileSdk 36

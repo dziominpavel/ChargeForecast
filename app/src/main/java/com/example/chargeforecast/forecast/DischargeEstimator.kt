@@ -1,6 +1,7 @@
 package com.example.chargeforecast.forecast
 
 import com.example.chargeforecast.battery.BatterySnapshot
+import com.example.chargeforecast.session.BootIdentity
 import kotlin.math.max
 
 // Один наблюдённый интервал разряда внутри окна. Интервал — это
@@ -32,7 +33,9 @@ data class DischargeState(
     // Монотонная метка последнего замера (elapsedRealtime).
     val lastSampleMs: Long?,
     // Счётчик заряда на момент последнего замера — якорь интервала.
-    val lastCounterUah: Long?
+    val lastCounterUah: Long?,
+    // Загрузка, в которой сняты метки; null у старых записей.
+    val bootCount: Int? = null
 )
 
 // Почему замер не стал интервалом. Нужно журналу: без причины
@@ -108,20 +111,46 @@ class DischargeEstimator(
     // Журнал наблюдений: одна строка на каждый замер, включая
     // пропущенные с причиной (design D5).
     private val onObservation: (DischargeObservation) -> Unit = {},
-    private val wallClockMs: () -> Long = { System.currentTimeMillis() }
+    private val wallClockMs: () -> Long = { System.currentTimeMillis() },
+    // Номер загрузки, к которой относится текущее состояние. Нужен,
+    // чтобы не смешать монотонные метки elapsedRealtime разных загрузок.
+    initialBootCount: Int? = null
 ) {
 
     private val samples = ArrayDeque<DischargeSample>()
     private var lastSampleMs: Long? = null
     private var lastCounterUah: Long? = null
+    private var bootCount: Int? = initialBootCount
 
     // Восстановление после убийства процесса или перезагрузки. Счётчик
     // восстанавливаем тоже: он физическая величина и сравним между
     // запусками процесса; сравнение через ребут отсекается проверкой
-    // dtMs <= 0 в update (elapsedRealtime обнуляется). Обрезка окна
-    // выполняется по свежему времени в summary()/estimate().
-    fun restore(state: DischargeState?) {
+    // dtMs <= 0 в update (elapsedRealtime обнуляется). Если загрузка
+    // сменилась, окно начинается заново: старые сэмплы другой шкалы
+    // времени в среднее не попадают.
+    fun restore(
+        state: DischargeState?,
+        currentBootCount: Int? = bootCount,
+        nowElapsedMs: Long = state?.lastSampleMs ?: 0L
+    ) {
+        bootCount = currentBootCount
         if (state == null) return
+        val savedAnchor = state.lastSampleMs ?: state.samples.maxOfOrNull { it.atMs }
+        if (!BootIdentity.sameBoot(
+                savedBootCount = state.bootCount,
+                savedElapsedRealtimeMs = savedAnchor,
+                currentBootCount = currentBootCount,
+                currentElapsedRealtimeMs = nowElapsedMs
+            )
+        ) {
+            samples.clear()
+            lastSampleMs = null
+            lastCounterUah = null
+            // Стираем и сохранённое состояние прошлой загрузки, чтобы оно
+            // не всплывало при следующем запуске.
+            onPersist(state())
+            return
+        }
         samples.clear()
         state.samples
             .filter { it.durationMs > 0L && it.dischargedUah >= 0L }
@@ -132,7 +161,7 @@ class DischargeEstimator(
     }
 
     fun state(): DischargeState =
-        DischargeState(samples.toList(), lastSampleMs, lastCounterUah)
+        DischargeState(samples.toList(), lastSampleMs, lastCounterUah, bootCount)
 
     fun update(snapshot: BatterySnapshot, nowMs: Long) {
         if (snapshot.isPlugged) {
@@ -289,16 +318,20 @@ class DischargeEstimator(
         samples.addLast(sample)
     }
 
-    // Обрезка окна: корзины, конец которых старше суток, выкидываются.
-    // Жёсткий лимит страхует от аномальных данных.
+    // Обрезка окна: сэмплы проверяются и сортируются, «будущие» метки
+    // (успевшие попасть из чужой/сбитой шкалы) отбрасываются. Затем
+    // выкидываются корзины старше суток и действует жёсткий лимит.
     private fun prune(nowMs: Long) {
         val cutoff = nowMs - windowMs
-        while (samples.isNotEmpty() && samples.first().atMs < cutoff) {
-            samples.removeFirst()
-        }
-        while (samples.size > MAX_BUCKETS) {
-            samples.removeFirst()
-        }
+        val kept = samples
+            .asSequence()
+            .filter { it.atMs <= nowMs && it.durationMs > 0L && it.dischargedUah >= 0L }
+            .sortedBy { it.atMs }
+            .filter { it.atMs >= cutoff }
+            .toList()
+            .takeLast(MAX_BUCKETS)
+        samples.clear()
+        kept.forEach(::addSample)
     }
 
     private fun bucketOf(atMs: Long): Long = atMs / BUCKET_MS

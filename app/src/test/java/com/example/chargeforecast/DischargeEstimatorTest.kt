@@ -5,6 +5,7 @@ import com.example.chargeforecast.battery.ChargeType
 import com.example.chargeforecast.forecast.DischargeEstimator
 import com.example.chargeforecast.forecast.DischargeObservation
 import com.example.chargeforecast.forecast.DischargeObservationReason
+import com.example.chargeforecast.forecast.DischargeSample
 import com.example.chargeforecast.forecast.DischargeState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -341,5 +342,137 @@ class DischargeEstimatorTest {
         assertEquals(2, persisted.size)
         assertEquals(estimator.state(), persisted.last())
         assertTrue(persisted.last().samples.isNotEmpty())
+    }
+
+    @Test
+    fun restore_afterReboot_dropsPreviousWindow() {
+        // Номер загрузки сменился: метки elapsedRealtime несравнимы, окно
+        // начинается заново — показывается приор, а не смесь двух шкал.
+        val saved = DischargeState(
+            samples = listOf(
+                DischargeSample(
+                    atMs = 7_200_000L,
+                    durationMs = 7_200_000L,
+                    dischargedUah = 720_000L
+                )
+            ),
+            lastSampleMs = 7_200_000L,
+            lastCounterUah = 1_280_000L,
+            bootCount = 4
+        )
+        val estimator = DischargeEstimator()
+        estimator.restore(saved, currentBootCount = 5, nowElapsedMs = 5_000L)
+
+        assertEquals(0L, estimator.summary(5_000L).trackedMs)
+        assertNull(estimator.state().lastSampleMs)
+        assertNull(estimator.state().lastCounterUah)
+        assertEquals(34_560L, estimator.estimate(60, 2_000_000L, 5_000L).remainingSec)
+        assertEquals(5, estimator.state().bootCount)
+    }
+
+    @Test
+    fun restore_afterReboot_persistsClearedWindow() {
+        // Очистка после ребута сразу уходит в персист: старое состояние не
+        // всплывёт при следующем запуске.
+        val persisted = mutableListOf<DischargeState>()
+        val estimator = DischargeEstimator(onPersist = { persisted += it })
+        estimator.restore(
+            DischargeState(
+                samples = listOf(
+                    DischargeSample(7_200_000L, 7_200_000L, 720_000L)
+                ),
+                lastSampleMs = 7_200_000L,
+                lastCounterUah = 1_280_000L,
+                bootCount = 4
+            ),
+            currentBootCount = 5,
+            nowElapsedMs = 5_000L
+        )
+        assertEquals(1, persisted.size)
+        assertTrue(persisted.single().samples.isEmpty())
+        assertEquals(5, persisted.single().bootCount)
+    }
+
+    @Test
+    fun restore_fromBackupOnAnotherDevice_dropsWindow() {
+        // Восстановление из backup на другом устройстве: чужой номер
+        // загрузки не совпадает, окно пустое.
+        val estate = DischargeState(
+            samples = listOf(
+                DischargeSample(atMs = 7_200_000L, durationMs = 7_200_000L, dischargedUah = 720_000L)
+            ),
+            lastSampleMs = 7_200_000L,
+            lastCounterUah = 1_280_000L,
+            bootCount = 999
+        )
+        val estimator = DischargeEstimator()
+        estimator.restore(estate, currentBootCount = 3, nowElapsedMs = 50_000L)
+        assertEquals(0L, estimator.summary(50_000L).trackedMs)
+        assertEquals(3, estimator.state().bootCount)
+    }
+
+    @Test
+    fun restore_legacyStateWithoutBootCount_resetsWhenCurrentKnown() {
+        // Старая запись не знает bootCount: при известном текущем номере
+        // считаем её чужой и начинаем окно заново.
+        val estimator = DischargeEstimator()
+        estimator.restore(
+            DischargeState(
+                samples = listOf(
+                    DischargeSample(1_000_000L, 1_000_000L, 100_000L)
+                ),
+                lastSampleMs = 1_000_000L,
+                lastCounterUah = 2_000_000L,
+                bootCount = null
+            ),
+            currentBootCount = 3,
+            nowElapsedMs = 2_000_000L
+        )
+        assertEquals(0L, estimator.summary(2_000_000L).trackedMs)
+    }
+
+    @Test
+    fun restore_sameBoot_keepsWindow() {
+        // Та же загрузка (номер совпал) — окно продолжается, даже если
+        // метка успела уйти далеко вперёд.
+        val saved = DischargeState(
+            samples = listOf(
+                DischargeSample(atMs = 7_200_000L, durationMs = 7_200_000L, dischargedUah = 720_000L)
+            ),
+            lastSampleMs = 7_200_000L,
+            lastCounterUah = 1_280_000L,
+            bootCount = 4
+        )
+        val estimator = DischargeEstimator()
+        estimator.restore(saved, currentBootCount = 4, nowElapsedMs = 8_000_000L)
+        assertEquals(7_200_000L, estimator.summary(8_000_000L).trackedMs)
+    }
+
+    @Test
+    fun prune_dropsFutureSamples_andSortsRest() {
+        // Неотсортированный вход и «будущая» метка: окно считает только
+        // валидные интервалы текущей шкалы.
+        val estimator = DischargeEstimator()
+        estimator.restore(
+            DischargeState(
+                samples = listOf(
+                    DischargeSample(atMs = 9_000_000L, durationMs = 60_000L, dischargedUah = 10_000L),
+                    DischargeSample(atMs = 3_000_000L, durationMs = 60_000L, dischargedUah = 5_000L),
+                    DischargeSample(atMs = 20_000_000L, durationMs = 60_000L, dischargedUah = 99_000L)
+                ),
+                lastSampleMs = 20_000_000L,
+                lastCounterUah = 1_000_000L,
+                bootCount = 1
+            ),
+            currentBootCount = 1,
+            nowElapsedMs = 20_000_000L
+        )
+        val summary = estimator.summary(10_000_000L)
+        assertEquals("будущий сэмпл не должен попасть в окно", 120_000L, summary.trackedMs)
+        assertEquals(15_000L, summary.dischargedUah)
+        assertEquals(
+            listOf(3_000_000L, 9_000_000L),
+            estimator.state().samples.map { it.atMs }
+        )
     }
 }

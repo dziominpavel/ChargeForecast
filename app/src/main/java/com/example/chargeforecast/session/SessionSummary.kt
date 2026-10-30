@@ -14,5 +14,7 @@ data class SessionSummary(
     // искажали бы среднее и приор следующей сессии.
     val avgCcSpeedPctPerMin: Float,
     val peakCurrentMa: Float?,
-    val chargeType: ChargeType?
+    val chargeType: ChargeType?,
+    // UUID сессии для идемпотентной финализации; null у старых записей.
+    val id: String? = null
 )

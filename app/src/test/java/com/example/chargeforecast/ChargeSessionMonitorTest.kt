@@ -3,8 +3,12 @@ package com.example.chargeforecast
 import com.example.chargeforecast.battery.BatterySnapshot
 import com.example.chargeforecast.battery.ChargeType
 import com.example.chargeforecast.forecast.DischargeEstimator
+import com.example.chargeforecast.forecast.DischargeSample
+import com.example.chargeforecast.forecast.DischargeState
+import com.example.chargeforecast.session.ActiveSessionSnapshot
 import com.example.chargeforecast.session.ChargeSessionMonitor
 import com.example.chargeforecast.session.SessionCache
+import com.example.chargeforecast.session.SessionRuntimeStore
 import com.example.chargeforecast.session.SessionState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -45,13 +49,15 @@ class ChargeSessionMonitorTest {
         nowMs: () -> Long
     ): ChargeSessionMonitor {
         val cache = SessionCache(FakeSharedPreferences())
-        cache.saveCapacity(capacity)
+        val runtime = SessionRuntimeStore(FakeSharedPreferences())
+        runtime.saveCapacity(capacity)
         return ChargeSessionMonitor(
             snapshots,
             CoroutineScope(Dispatchers.Unconfined),
             nowMs,
             cache,
-            DischargeEstimator()
+            DischargeEstimator(),
+            runtime
         )
     }
 
@@ -134,7 +140,8 @@ class ChargeSessionMonitorTest {
         // сессия завершается, сводка пишется при отключении.
         val prefs = FakeSharedPreferences()
         val cache = SessionCache(prefs)
-        cache.saveCapacity(capacity)
+        val runtime = SessionRuntimeStore(FakeSharedPreferences())
+        runtime.saveCapacity(capacity)
         val snapshots = MutableStateFlow<BatterySnapshot?>(null)
         var nowMs = 0L
         val monitor = ChargeSessionMonitor(
@@ -142,7 +149,8 @@ class ChargeSessionMonitorTest {
             CoroutineScope(Dispatchers.Unconfined),
             { nowMs },
             cache,
-            DischargeEstimator()
+            DischargeEstimator(),
+            runtime
         )
 
         // Зарядка 50% → 80% за 30 минут.
@@ -183,5 +191,79 @@ class ChargeSessionMonitorTest {
         nowMs = 5_000L
         snapshots.value = snap(nowMs, 50, plugged = true)
         assertEquals(5_000L, await(monitor) { it.sessionAgeMs > 0L }.sessionAgeMs)
+    }
+
+    @Test
+    fun bootChange_dropsDischargeWindow_andShowsPrior() {
+        // После ребута окно разряда начинается заново: старые сэмплы не
+        // смешиваются с новой шкалой, показывается приор от уровня.
+        val saved = DischargeState(
+            samples = listOf(
+                DischargeSample(
+                    atMs = 7_200_000L,
+                    durationMs = 7_200_000L,
+                    dischargedUah = 720_000L
+                )
+            ),
+            lastSampleMs = 7_200_000L,
+            lastCounterUah = 1_280_000L,
+            bootCount = 1
+        )
+        val estimator = DischargeEstimator().also {
+            it.restore(saved, currentBootCount = 2, nowElapsedMs = 5_000L)
+        }
+        val snapshots = MutableStateFlow<BatterySnapshot?>(null)
+        var nowMs = 5_000L
+        val monitor = ChargeSessionMonitor(
+            snapshots,
+            CoroutineScope(Dispatchers.Unconfined),
+            { nowMs },
+            SessionCache(FakeSharedPreferences()),
+            estimator,
+            SessionRuntimeStore(FakeSharedPreferences()),
+            bootCount = 2
+        )
+
+        snapshots.value = snap(nowMs, 60, plugged = false)
+        val state = await(monitor) { it.snapshot?.levelPct == 60 }
+
+        assertEquals(0L, state.discharge.trackedMs)
+        assertEquals(34_560L, state.discharge.remainingSec)
+    }
+
+    @Test
+    fun initialSnapshot_sameBoot_continuesSession() {
+        // Снимок той же загрузки передан монитору до первого тика:
+        // возраст и старт продолжаются, а не начинаются с нуля.
+        val snapshot = ActiveSessionSnapshot(
+            id = "session-monitor",
+            bootCount = 1,
+            startedAtMs = 0L,
+            startLevelPct = 50,
+            chargeType = ChargeType.AC,
+            ccSpeedSum = 0f,
+            ccSampleCount = 0,
+            peakCurrentUa = null,
+            lastLevelPct = 55,
+            lastUpdatedAtMs = 60_000L
+        )
+        val snapshots = MutableStateFlow<BatterySnapshot?>(null)
+        var nowMs = 60_000L
+        val monitor = ChargeSessionMonitor(
+            snapshots,
+            CoroutineScope(Dispatchers.Unconfined),
+            { nowMs },
+            SessionCache(FakeSharedPreferences()),
+            DischargeEstimator(),
+            SessionRuntimeStore(FakeSharedPreferences()),
+            bootCount = 1,
+            initialSnapshot = snapshot
+        )
+
+        snapshots.value = snap(nowMs, 55, plugged = true)
+        val state = await(monitor) { it.sessionAgeMs >= 60_000L }
+
+        assertEquals(60_000L, state.sessionAgeMs)
+        assertNotNull(state.forecast.remainingSec)
     }
 }
