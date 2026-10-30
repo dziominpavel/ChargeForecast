@@ -5,10 +5,27 @@
 
 ## [Unreleased]
 
+**Добавлено**
+- После обновления приложения фоновое слежение поднимается само — открывать приложение не нужно.
+- На главном экране видна строка статуса слежения; если оно остановлено, рядом есть «Перезапустить».
+- Если датчик тока или счётчика недоступен, экран объясняет, по какому источнику считается прогноз.
+
 **Исправлено**
 - После перезагрузки оценка разряда больше не смешивает замеры прошлой загрузки — окно начинается заново.
 - Если система убила приложение во время зарядки, сессия продолжается с прежнего старта, а не начинается с текущего процента.
 - Незавершённая зарядка после перезагрузки закрывается по последнему уровню и сохраняется в сводке без дублей.
+- Ошибка запуска слежения больше не теряется до открытия экрана.
+- Виджет больше не показывает застывший отсчёт, когда слежение остановлено.
+
+### Добавлено
+- Change: `tracking-health`.
+- `TrackingHealth` (`tracking/TrackingHealth.kt`) и `TrackingHealthStore`: процессное состояние `STARTING`/`RUNNING`/`STOPPED`/`BLOCKED_BY_OS`/`NO_PERMISSION` с причиной отказа; входит в `SessionState` и читается экраном и виджетом.
+- `ChargeSessionMonitor`: health и качество датчиков добавляются вторым слоем поверх `engineState`, поэтому смена статуса не вызывает повторный `SessionEngine.update()`; ошибки переведены с `SharedFlow(replay = 0)` на буферизованный `Channel`.
+- `ChargeForecastService`: `start()` и `startForeground()` ловят отказ, различают запрет ОС и отсутствие разрешения, не роняют процесс; после неудачного foreground сервис не возвращает `START_STICKY`.
+- `TrackingRestartReceiver` (вместо `BootCompletedReceiver`): рестарт по `BOOT_COMPLETED` и `MY_PACKAGE_REPLACED`.
+- `BatteryDataQuality`/`BatterySensorTracker`: `MISSING` только после трёх пустых чтений; `BatteryMonitor` логирует пойманные исключения вместо немых `catch`.
+- `TrackingStatusBar` и пояснение fallback в `SessionScreen`; `WidgetText` использует `state.tracking`, deprecated `ActivityManager.getRunningServices()` удалён.
+- Тесты: `TrackingHealthTest`, `TrackingHealthStoreTest`, `BatterySensorTrackerTest`, `SensorFallbackTextTest`; расширены `ChargeSessionMonitorTest`, `WidgetTextTest` (245/245 JVM-тестов, 27 сьютов).
 
 ### Исправлено
 - Change: `preserve-session-data`.

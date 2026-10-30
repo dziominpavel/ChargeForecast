@@ -8,6 +8,7 @@ import com.example.chargeforecast.session.BootIdentity
 import com.example.chargeforecast.session.ChargeSessionMonitor
 import com.example.chargeforecast.session.SessionCache
 import com.example.chargeforecast.session.SessionRuntimeStore
+import com.example.chargeforecast.tracking.TrackingHealthStore
 import com.example.chargeforecast.widget.BatteryWidgetUpdater
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -32,6 +33,11 @@ class ChargeForecastApplication : Application() {
     lateinit var sessionCache: SessionCache
         private set
 
+    // Живость фонового слежения — одно значение на процесс. Пишет сервис,
+    // читают монитор, экран и виджет.
+    lateinit var trackingHealthStore: TrackingHealthStore
+        private set
+
     // Машинное состояние: boot identity, окно разряда, ёмкость и live-снимок
     // активной сессии. Отдельный prefs-файл, исключённый из backup.
     lateinit var sessionRuntimeStore: SessionRuntimeStore
@@ -54,6 +60,7 @@ class ChargeForecastApplication : Application() {
         val bootIdentity = BootIdentity.current(this)
         sessionCache = SessionCache.create(this)
         sessionRuntimeStore = SessionRuntimeStore.create(this)
+        trackingHealthStore = TrackingHealthStore()
         sessionRuntimeStore.saveBootIdentity(bootIdentity)
 
         dischargeJournal = DischargeJournal(File(filesDir, JOURNAL_FILE_NAME))
@@ -93,7 +100,9 @@ class ChargeForecastApplication : Application() {
             dischargeEstimator = dischargeEstimator,
             runtimeStore = sessionRuntimeStore,
             bootCount = bootIdentity.bootCount,
-            initialSnapshot = resumeSession
+            initialSnapshot = resumeSession,
+            trackingHealth = trackingHealthStore.health,
+            dataQuality = batteryMonitor.dataQuality
         )
         batteryMonitor.start()
         // Виджет получает то же состояние, что экран и сервис — одним

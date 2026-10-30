@@ -11,12 +11,15 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.os.IBinder
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import com.example.chargeforecast.ChargeForecastApplication
 import com.example.chargeforecast.MainActivity
 import com.example.chargeforecast.R
+import com.example.chargeforecast.tracking.TrackingFailure
+import com.example.chargeforecast.tracking.TrackingStatus
 
 // Постоянный сервис слежения за зарядкой (design D3, D5).
 //
@@ -32,6 +35,7 @@ import com.example.chargeforecast.R
 class ChargeForecastService : Service() {
 
     private var powerReceiver: BroadcastReceiver? = null
+    private var foregroundStarted = false
 
     private val app: ChargeForecastApplication
         get() = application as ChargeForecastApplication
@@ -46,18 +50,43 @@ class ChargeForecastService : Service() {
         // Текст уведомления один на всё время жизни сервиса (design D8):
         // смена состояния зарядки шторку не трогает. Прогрев состояния
         // остаётся в Application — там же подписчики (экран, виджет, журнал).
-        ServiceCompat.startForeground(
-            this,
-            NOTIFICATION_ID,
-            buildNotification(),
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
-        )
-        registerPowerReceiver()
+        try {
+            ServiceCompat.startForeground(
+                this,
+                NOTIFICATION_ID,
+                buildNotification(),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+            )
+            foregroundStarted = true
+            app.trackingHealthStore.markRunning()
+            registerPowerReceiver()
+        } catch (e: SecurityException) {
+            // Нет нужного разрешения — это не «ОС вредничает», а
+            // отдельное состояние с действием «Настройки».
+            Log.w(TAG, "startForeground denied", e)
+            app.trackingHealthStore.markNoPermission()
+            stopSelf()
+        } catch (e: Exception) {
+            // Запрет foreground/типа сервиса не должен ронять процесс:
+            // фиксируем причину и отдаём её экрану и виджету.
+            Log.w(TAG, "startForeground failed", e)
+            app.trackingHealthStore.markBlocked(TrackingFailure.FOREGROUND_BLOCKED)
+            stopSelf()
+        }
     }
 
     // START_STICKY: если оболочка всё же выгрузит процесс — система
     // перезапустит сервис, слежение восстановится без пользователя.
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
+    // После неудачного foreground перезапуск бессмысленен и был бы
+    // циклом падений — тогда START_NOT_STICKY.
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (!foregroundStarted) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        app.trackingHealthStore.markRunning()
+        return START_STICKY
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -70,6 +99,13 @@ class ChargeForecastService : Service() {
             }
         }
         powerReceiver = null
+        // Ошибку foreground не затираем: markStopped сам сохраняет
+        // BLOCKED_BY_OS/NO_PERMISSION. Нормальная остановка сервиса
+        // становится честным «слежение остановлено».
+        if (foregroundStarted) {
+            app.trackingHealthStore.markStopped()
+        }
+        foregroundStarted = false
         super.onDestroy()
     }
 
@@ -156,6 +192,7 @@ class ChargeForecastService : Service() {
         get() = getSystemService(NotificationManager::class.java)
 
     companion object {
+        private const val TAG = "ChargeForecastService"
         private const val CHANNEL_ID = "charge_tracking"
         private const val NOTIFICATION_ID = 4210
 
@@ -166,30 +203,31 @@ class ChargeForecastService : Service() {
         // возвращается к IMPORTANCE_MIN: откат одной строкой.
         private const val CHANNEL_IMPORTANCE = NotificationManager.IMPORTANCE_NONE
 
-        // Поднять слежение. Вызывается при открытии приложения и после
-        // перезагрузки. Старт из фона с API 31+ бросает
-        // ForegroundServiceStartNotAllowedException: здесь оба вызова идут
-        // из разрешённых контекстов (Activity, BOOT_COMPLETED), но оболочка
-        // (EMUI) может ограничить и это.
+        // Поднять слежение. Вызывается при открытии приложения, после
+        // перезагрузки и после обновления пакета. Старт из фона с API 31+
+        // может бросить ForegroundServiceStartNotAllowedException; оболочка
+        // (EMUI) может ограничить и разрешённый контекст.
         fun start(context: Context) {
+            val app = context.applicationContext as? ChargeForecastApplication ?: return
+            val store = app.trackingHealthStore
+            // Не откатываем подтверждённый RUNNING в STARTING, но и не
+            // пропускаем вызов: сервис мог умереть, оставив статус.
+            if (store.health.value.status != TrackingStatus.RUNNING) {
+                store.markStarting()
+            }
             try {
                 context.startForegroundService(
                     Intent(context, ChargeForecastService::class.java)
                 )
-            } catch (e: IllegalStateException) {
-                // Спека background-tracking: ошибка обрабатывается, а не
-                // глушится. UI в момент события может не быть — подписчикам
-                // уходит сообщение, а виджет отдельно покажет состояние
-                // «слежение остановлено».
-                reportStartupFailure(context, e)
+            } catch (e: SecurityException) {
+                Log.w(TAG, "startForegroundService denied", e)
+                store.markNoPermission()
+            } catch (e: Exception) {
+                // Спека background-tracking: ошибка не всплывает падением,
+                // а становится видимым статусом для экрана и виджета.
+                Log.w(TAG, "startForegroundService failed", e)
+                store.markBlocked(TrackingFailure.classify(e))
             }
-        }
-
-        private fun reportStartupFailure(context: Context, cause: Exception) {
-            val app = context.applicationContext as? ChargeForecastApplication ?: return
-            app.sessionMonitor.reportError(
-                app.getString(R.string.error_service_start_blocked, cause.javaClass.simpleName)
-            )
         }
     }
 }

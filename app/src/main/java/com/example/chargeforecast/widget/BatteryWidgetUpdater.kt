@@ -17,7 +17,7 @@ class BatteryWidgetUpdater(private val context: Context) {
     private var lastPushedAtMs = 0L
 
     fun onState(state: SessionState) {
-        val model = WidgetText.model(state, BatteryWidgetProvider.isTrackingRunning(context))
+        val model = WidgetText.model(state)
         if (model == lastModel) {
             // Ничего не изменилось — обновление не нужно вовсе.
             return

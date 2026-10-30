@@ -11,4 +11,8 @@ object ChargeDimens {
     val HeroIconSize = 72.dp
     val CardCorner = 16.dp
     val CardPadding = 16.dp
+    val StatusBarPaddingHorizontal = 16.dp
+    val StatusBarPaddingVertical = 8.dp
+    val StatusDotSize = 8.dp
+    val GapTiny = 6.dp
 }

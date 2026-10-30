@@ -1,6 +1,8 @@
 package com.example.chargeforecast
 
+import android.content.Intent
 import android.os.Bundle
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -27,6 +29,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.core.net.toUri
 import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.chargeforecast.BuildConfig
@@ -35,6 +38,7 @@ import com.example.chargeforecast.settings.SettingsCache
 import com.example.chargeforecast.ui.SessionScreen
 import com.example.chargeforecast.ui.SessionViewModel
 import com.example.chargeforecast.ui.SettingsScreen
+import com.example.chargeforecast.ui.TrackingStatusBar
 import com.example.chargeforecast.ui.theme.ChargeForecastTheme
 import com.example.chargeforecast.widget.BatteryWidgetProvider
 
@@ -59,6 +63,7 @@ class MainActivity : ComponentActivity() {
 fun ChargeForecastApp(viewModel: SessionViewModel = viewModel()) {
     val state by viewModel.state.collectAsState()
     val snackbar = remember { SnackbarHostState() }
+    val context = LocalContext.current
     // Ручная навигация (design D3): второй экран — настройки, состояние
     // сессии продолжает течь, ViewModel не пересоздаётся.
     var showSettings by remember { mutableStateOf(false) }
@@ -90,6 +95,24 @@ fun ChargeForecastApp(viewModel: SessionViewModel = viewModel()) {
             )
         },
         snackbarHost = { SnackbarHost(snackbar) },
+        bottomBar = {
+            // Статус — только на экране сессии; в настройках он отнял бы
+            // место у нижнего блока версии.
+            if (!showSettings) {
+                TrackingStatusBar(
+                    health = state.tracking,
+                    onRestart = viewModel::restartTracking,
+                    onOpenSettings = {
+                        context.startActivity(
+                            Intent(
+                                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                "package:${context.packageName}".toUri()
+                            )
+                        )
+                    }
+                )
+            }
+        },
         containerColor = MaterialTheme.colorScheme.background,
         modifier = Modifier.fillMaxSize()
     ) { innerPadding ->

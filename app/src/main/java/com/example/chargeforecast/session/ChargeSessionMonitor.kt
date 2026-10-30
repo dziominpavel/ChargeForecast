@@ -1,25 +1,29 @@
 package com.example.chargeforecast.session
 
 import android.os.SystemClock
+import com.example.chargeforecast.battery.BatteryDataQuality
 import com.example.chargeforecast.battery.BatterySnapshot
 import com.example.chargeforecast.battery.SysfsCapacity
 import com.example.chargeforecast.forecast.ChargeForecast
 import com.example.chargeforecast.forecast.DischargeEstimate
 import com.example.chargeforecast.forecast.DischargeEstimator
+import com.example.chargeforecast.tracking.TrackingHealth
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
-import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
 
 // Состояние текущей сессии зарядки — единый источник правды для экрана
@@ -30,7 +34,11 @@ data class SessionState(
     val forecast: ChargeForecast,
     val sessionAgeMs: Long,
     // Оценка оставшейся работы телефона — вне зарядки (battery-widget).
-    val discharge: DischargeEstimate = DischargeEstimate.NONE
+    val discharge: DischargeEstimate = DischargeEstimate.NONE,
+    // Живость фонового слежения: экран и виджет показывают её постоянно.
+    val tracking: TrackingHealth = TrackingHealth.running(),
+    // Какие датчики батареи реально отдают данные: экран объясняет fallback.
+    val dataQuality: BatteryDataQuality = BatteryDataQuality.UNKNOWN
 ) {
     val isPlugged: Boolean get() = snapshot?.isPlugged == true
 }
@@ -43,6 +51,7 @@ data class SessionState(
 // Зависимость — именно поток, а не BatteryMonitor: монитору нужен только
 // источник снапшотов, а Context-зависимый класс сделал бы класс
 // непригодным для JVM-теста (там SystemClock и.getSystemService недоступны).
+@OptIn(ExperimentalCoroutinesApi::class)
 class ChargeSessionMonitor(
     private val batterySnapshots: StateFlow<BatterySnapshot?>,
     scope: CoroutineScope,
@@ -51,13 +60,21 @@ class ChargeSessionMonitor(
     dischargeEstimator: DischargeEstimator? = null,
     runtimeStore: SessionRuntimeStore? = null,
     bootCount: Int? = null,
-    initialSnapshot: ActiveSessionSnapshot? = null
+    initialSnapshot: ActiveSessionSnapshot? = null,
+    trackingHealth: StateFlow<TrackingHealth>? = null,
+    dataQuality: StateFlow<BatteryDataQuality>? = null
 ) {
-    // Ошибки — события, а не состояние (design D7): replay 0, каждый
-    // подписчик получает сообщение ровно один раз. Значением их держать
-    // нельзя — новый подписчик (сервис, виджет) переигрывал бы устаревшее.
-    private val _errors = MutableSharedFlow<String>(replay = 0)
-    val errors: SharedFlow<String> = _errors.asSharedFlow()
+    // Ошибки — события, а не состояние: буферизованный канал отдаёт
+    // сообщение, пришедшее до подписки UI, и не переигрывает его второму
+    // подписчику. Статус слежения при этом живёт в TrackingHealth.
+    private val _errors = Channel<String>(
+        capacity = ERROR_BUFFER_CAPACITY,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
+    val errors: Flow<String> = _errors.receiveAsFlow()
+
+    private val trackingHealthFlow = trackingHealth ?: MutableStateFlow(TrackingHealth.running())
+    private val dataQualityFlow = dataQuality ?: MutableStateFlow(BatteryDataQuality.UNKNOWN)
 
     private val sysfsCapacityUah: Long? by lazy { SysfsCapacity.readDesignCapacityUah() }
     private val engine =
@@ -79,7 +96,7 @@ class ChargeSessionMonitor(
     }
 
     fun reportError(message: String?) {
-        if (message != null) _errors.tryEmit(message)
+        if (message != null) _errors.trySend(message)
     }
 
     // Тикер: переизлучаем состояние и без broadcast — для «Измеряю…»
@@ -104,7 +121,10 @@ class ChargeSessionMonitor(
             }
         }
 
-    val state: StateFlow<SessionState> =
+    // Движок обновляется только батареей и тикером. Health и качество
+    // датчиков добавляются вторым слоем: иначе смена статуса вызывала бы
+    // engine.update() с тем же снапшотом и искажала спидометры.
+    private val engineState: StateFlow<SessionState> =
         combine(batterySnapshots, ticker) { snapshot, nowMs ->
             // Свежайшая из двух меток. В простое тикер молчит, и меткой
             // служит сам снапшот — он пишется в момент чтения батареи.
@@ -121,7 +141,20 @@ class ChargeSessionMonitor(
             state
         }.stateIn(scope, SharingStarted.Eagerly, engine.update(null, clock()))
 
+    val state: StateFlow<SessionState> =
+        combine(engineState, trackingHealthFlow, dataQualityFlow) { base, health, quality ->
+            base.copy(tracking = health, dataQuality = quality)
+        }.stateIn(
+            scope,
+            SharingStarted.Eagerly,
+            engineState.value.copy(
+                tracking = trackingHealthFlow.value,
+                dataQuality = dataQualityFlow.value
+            )
+        )
+
     companion object {
         const val TICKER_ACTIVE_MS = 1_000L
+        const val ERROR_BUFFER_CAPACITY = 16
     }
 }

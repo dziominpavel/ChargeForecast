@@ -22,6 +22,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import com.example.chargeforecast.R
+import com.example.chargeforecast.battery.BatteryDataQuality
 import com.example.chargeforecast.battery.BatterySnapshot
 import com.example.chargeforecast.battery.ChargeType
 import com.example.chargeforecast.forecast.ForecastAccuracy
@@ -67,6 +68,7 @@ fun SessionScreen(
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         ElectricalLine(snapshot = snapshot)
+        SensorFallbackNote(state.dataQuality, whileCharging = true)
 
         Card(
             colors = CardDefaults.cardColors(
@@ -185,20 +187,20 @@ private fun DischargeScreen(state: SessionState) {
             horizontalAlignment = Alignment.Start,
             verticalArrangement = Arrangement.spacedBy(ChargeDimens.GapSmall)
         ) {
-            val remainingSec = estimate.remainingSec
-            if (remainingSec != null) {
-                // Приблизительность обозначена честно: «≈» — расход
-                // зависит от будущего использования.
-                Text(
-                    text = stringResource(
-                        R.string.session_discharge_remaining,
-                        ForecastText.formatRemaining(context, remainingSec)
-                    ),
-                    modifier = Modifier.fillMaxWidth(),
-                    style = MaterialTheme.typography.headlineLarge,
-                    color = MaterialTheme.colorScheme.primary
-                )
-            }
+            // hasEstimate выше гарантирует число; requireNotNull убирает
+            // ложную ветку «нет данных» и предупреждение компилятора.
+            val remainingSec = requireNotNull(estimate.remainingSec)
+            // Приблизительность обозначена честно: «≈» — расход
+            // зависит от будущего использования.
+            Text(
+                text = stringResource(
+                    R.string.session_discharge_remaining,
+                    ForecastText.formatRemaining(context, remainingSec)
+                ),
+                modifier = Modifier.fillMaxWidth(),
+                style = MaterialTheme.typography.headlineLarge,
+                color = MaterialTheme.colorScheme.primary
+            )
 
             // Средний ток — только когда он измерен; пока измерения
             // нет, строка просто отсутствует, без «пока не измерен».
@@ -210,7 +212,22 @@ private fun DischargeScreen(state: SessionState) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
+            SensorFallbackNote(state.dataQuality, whileCharging = false)
         }
+    }
+}
+
+// Пояснение fallback — часть экрана, а не snackbar: при долгом отсутствии
+// датчика оно остаётся одной статичной строкой.
+@Composable
+private fun SensorFallbackNote(quality: BatteryDataQuality, whileCharging: Boolean) {
+    SensorFallbackText.messageRes(quality, whileCharging)?.let { messageRes ->
+        Text(
+            text = stringResource(messageRes),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center
+        )
     }
 }
 

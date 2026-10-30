@@ -45,12 +45,14 @@
                 android:value="Persistent battery monitoring for charge-time forecast and remaining-usage widget, active while the device is charging or idle" />
         </service>
 
-        <!-- Рестарт слежения после перезагрузки — без действия пользователя. -->
+        <!-- Рестарт слежения после перезагрузки и обновления приложения —
+             без действия пользователя. -->
         <receiver
-            android:name=".service.BootCompletedReceiver"
+            android:name=".service.TrackingRestartReceiver"
             android:exported="false">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
 

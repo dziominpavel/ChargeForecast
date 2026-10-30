@@ -1,7 +1,9 @@
 package com.example.chargeforecast
 
+import com.example.chargeforecast.battery.BatteryDataQuality
 import com.example.chargeforecast.battery.BatterySnapshot
 import com.example.chargeforecast.battery.ChargeType
+import com.example.chargeforecast.battery.SensorAvailability
 import com.example.chargeforecast.forecast.DischargeEstimator
 import com.example.chargeforecast.forecast.DischargeSample
 import com.example.chargeforecast.forecast.DischargeState
@@ -10,11 +12,18 @@ import com.example.chargeforecast.session.ChargeSessionMonitor
 import com.example.chargeforecast.session.SessionCache
 import com.example.chargeforecast.session.SessionRuntimeStore
 import com.example.chargeforecast.session.SessionState
+import com.example.chargeforecast.tracking.TrackingFailure
+import com.example.chargeforecast.tracking.TrackingHealth
+import com.example.chargeforecast.tracking.TrackingStatus
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -265,5 +274,64 @@ class ChargeSessionMonitorTest {
 
         assertEquals(60_000L, state.sessionAgeMs)
         assertNotNull(state.forecast.remainingSec)
+    }
+
+    @Test
+    fun trackingHealth_andQuality_reachState_withoutTouchingSession() {
+        val snapshots = MutableStateFlow<BatterySnapshot?>(null)
+        var nowMs = 0L
+        val health = MutableStateFlow(TrackingHealth.running())
+        val quality = MutableStateFlow(BatteryDataQuality.UNKNOWN)
+        val monitor = ChargeSessionMonitor(
+            snapshots,
+            CoroutineScope(Dispatchers.Unconfined),
+            { nowMs },
+            SessionCache(FakeSharedPreferences()),
+            DischargeEstimator(),
+            SessionRuntimeStore(FakeSharedPreferences()),
+            trackingHealth = health,
+            dataQuality = quality
+        )
+
+        snapshots.value = snap(0L, 50, plugged = true)
+        await(monitor) { it.isPlugged }
+        nowMs = 10_000L
+        snapshots.value = snap(nowMs, 50, plugged = true)
+        val before = await(monitor) { it.sessionAgeMs >= 10_000L }
+
+        health.value = TrackingHealth(
+            status = TrackingStatus.BLOCKED_BY_OS,
+            failure = TrackingFailure.START_BLOCKED
+        )
+        quality.value = BatteryDataQuality(
+            currentSensor = SensorAvailability.MISSING,
+            counterSensor = SensorAvailability.AVAILABLE
+        )
+        val after = await(monitor) {
+            it.tracking.status == TrackingStatus.BLOCKED_BY_OS &&
+                it.dataQuality.currentMissing
+        }
+
+        // Health и качество — только копия поверх состояния движка:
+        // сессия не начинается заново и не теряет накопленный возраст.
+        assertEquals(before.sessionAgeMs, after.sessionAgeMs)
+        assertEquals(before.snapshot, after.snapshot)
+        assertEquals(before.forecast, after.forecast)
+    }
+
+    @Test
+    fun errorReportedBeforeUiSubscription_isDeliveredOnce() = runBlocking {
+        val monitor = monitor(MutableStateFlow(null)) { 0L }
+
+        // UI ещё не подписан — сообщение обязано дождаться первого
+        // подписчика, а не потеряться вместе с replay = 0.
+        monitor.reportError("слежение не запустилось")
+
+        val first = withTimeoutOrNull(1_000L) { monitor.errors.first() }
+        assertEquals("слежение не запустилось", first)
+
+        // Второй подписчик не должен получить то же событие повторно.
+        val second = withTimeoutOrNull(100L) { monitor.errors.first() }
+        assertNull(second)
     }
 }

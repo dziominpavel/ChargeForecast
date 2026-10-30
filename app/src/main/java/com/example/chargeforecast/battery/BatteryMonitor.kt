@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.os.BatteryManager
 import android.os.SystemClock
+import android.util.Log
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -30,6 +31,11 @@ class BatteryMonitor(
 ) {
     private val _snapshots = MutableStateFlow<BatterySnapshot?>(null)
     val snapshots: StateFlow<BatterySnapshot?> = _snapshots.asStateFlow()
+
+    // Доступность датчиков: экран объясняет, какой fallback используется.
+    private val sensorTracker = BatterySensorTracker()
+    private val _dataQuality = MutableStateFlow(BatteryDataQuality.UNKNOWN)
+    val dataQuality: StateFlow<BatteryDataQuality> = _dataQuality.asStateFlow()
 
     private val batteryManager: BatteryManager? =
         appContext.getSystemService(Context.BATTERY_SERVICE) as? BatteryManager
@@ -81,8 +87,10 @@ class BatteryMonitor(
                             if (fresh != null && (prev == null || !sameReading(prev, fresh))) {
                                 _snapshots.value = fresh
                             }
-                        } catch (_: Exception) {
-                            // Пропускаем тик, следующий попробует снова.
+                        } catch (e: Exception) {
+                            // Пропускаем тик, следующий попробует снова,
+                            // но не молчим: сбой должен быть в логе.
+                            Log.w(TAG, "battery poll failed", e)
                         }
                     }
                 }
@@ -110,8 +118,9 @@ class BatteryMonitor(
         scope.launch {
             try {
                 readSnapshotNow()?.let { _snapshots.value = it }
-            } catch (_: Exception) {
+            } catch (e: Exception) {
                 // Один неудачный замер не должен ронять пробуждение.
+                Log.w(TAG, "battery refresh failed", e)
             }
         }
     }
@@ -128,7 +137,8 @@ class BatteryMonitor(
         val currentRaw = try {
             batteryManager?.getIntProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW)
                 ?: Long.MIN_VALUE.toInt()
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.w(TAG, "current sensor read failed", e)
             Long.MIN_VALUE.toInt()
         }
         // getIntProperty отдаёт int; Long.MIN_VALUE как int невозможен,
@@ -141,9 +151,11 @@ class BatteryMonitor(
         // Long.MIN_VALUE — ошибка драйвера, отсекается в toSnapshot.
         val counterUah: Long? = try {
             batteryManager?.getLongProperty(BatteryManager.BATTERY_PROPERTY_CHARGE_COUNTER)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.w(TAG, "charge counter read failed", e)
             null
-        }
+        }?.takeIf { it > 0 }
+        recordSensorQuality(currentUa, counterUah)
         val extras = BatteryExtras(
             level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, 0),
             scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, 100),
@@ -163,7 +175,12 @@ class BatteryMonitor(
         return extras.toSnapshot(clock())
     }
 
+    private fun recordSensorQuality(currentUa: Long?, counterUah: Long?) {
+        _dataQuality.value = sensorTracker.onReading(currentUa, counterUah)
+    }
+
     companion object {
+        private const val TAG = "BatteryMonitor"
         // Тик только для зарядки: в простое опроса нет (design D10).
         const val POLL_ACTIVE_MS = 1_000L
     }

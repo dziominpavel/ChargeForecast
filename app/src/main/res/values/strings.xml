@@ -42,8 +42,21 @@
     <string name="notification_channel_tracking">Слежение за зарядкой</string>
     <string name="notification_channel_tracking_desc">Служебное уведомление. Позволяет приложению самому замечать вставку кабеля и обновлять виджет, не открывая приложение.</string>
 
-    <!-- Ошибки фонового слежения -->
-    <string name="error_service_start_blocked">Фоновое слежение не запустилось (%1$s). Откройте приложение — виджет и экран обновятся.</string>
+    <!-- Статус фонового слежения на главном экране -->
+    <string name="tracking_running">Слежение активно</string>
+    <string name="tracking_starting">Запускаю слежение…</string>
+    <string name="tracking_stopped">Слежение остановлено</string>
+    <string name="tracking_blocked">Система остановила слежение</string>
+    <string name="tracking_no_permission">Нет разрешения на фоновую работу</string>
+    <string name="tracking_restart">Перезапустить</string>
+    <string name="tracking_open_settings">Настройки</string>
+    <string name="tracking_blocked_hint">Проверьте автозапуск и отключите оптимизацию батареи для приложения.</string>
+
+    <!-- Пояснение fallback, когда датчик не отдаёт данные -->
+    <string name="session_sensor_fallback_current">Датчик тока недоступен — скорость по уровню заряда</string>
+    <string name="session_sensor_fallback_counter">Счётчик заряда недоступен — прогноз по току</string>
+    <string name="session_sensor_fallback_both">Датчики тока и счётчика недоступны — прогноз по уровню заряда</string>
+    <string name="session_sensor_fallback_discharge">Счётчик заряда недоступен — оценка работы по приору</string>
 
     <!-- Настройки: первая настройка — непрозрачность фона виджета -->
     <string name="settings_title">Настройки</string>

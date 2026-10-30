@@ -6,6 +6,8 @@ import com.example.chargeforecast.forecast.ChargeForecast
 import com.example.chargeforecast.forecast.DischargeEstimate
 import com.example.chargeforecast.forecast.ForecastAccuracy
 import com.example.chargeforecast.session.SessionState
+import com.example.chargeforecast.tracking.TrackingHealth
+import com.example.chargeforecast.tracking.TrackingStatus
 import com.example.chargeforecast.widget.WidgetMode
 import com.example.chargeforecast.widget.WidgetSize
 import com.example.chargeforecast.widget.WidgetText
@@ -14,15 +16,15 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-// Выбор режима виджета — чистое решение от состояния сессии, без Context
-// (спека battery-widget: оба режима, полный заряд, честная деградация).
+// Модель виджета — чистое решение по состоянию сессии, без Context
+// (спека battery-widget: один режим, один бакет, честная деградация).
 class WidgetTextTest {
 
     private fun snap(level: Int, plugged: Boolean) = BatterySnapshot(
         levelPct = level,
         isPlugged = plugged,
         isCharging = plugged,
-        isFull = !plugged && false,
+        isFull = false,
         chargeType = if (plugged) ChargeType.AC else ChargeType.NONE,
         temperatureC = null,
         voltageV = null,
@@ -49,7 +51,8 @@ class WidgetTextTest {
         isFull: Boolean = false,
         remainingSec: Long? = null,
         accuracy: ForecastAccuracy = ForecastAccuracy.APPROXIMATE,
-        discharge: DischargeEstimate = DischargeEstimate.NONE
+        discharge: DischargeEstimate = DischargeEstimate.NONE,
+        tracking: TrackingHealth = TrackingHealth.running()
     ): SessionState {
         val snapshot = level?.let { snap(it, plugged) }
         return SessionState(
@@ -60,30 +63,28 @@ class WidgetTextTest {
                 forecast(remainingSec, accuracy, isFull)
             },
             sessionAgeMs = 0L,
-            discharge = discharge
+            discharge = discharge,
+            tracking = tracking
         )
     }
 
     @Test
     fun charging_showsCountdownAndLevel() {
         val model = WidgetText.model(
-            state(level = 60, plugged = true, remainingSec = 5_400L),
-            tracking = true
+            state(level = 60, plugged = true, remainingSec = 5_400L)
         )
         assertEquals(WidgetMode.CHARGING, model.mode)
         assertEquals(5_400L, model.remainingSec)
         assertEquals(60, model.levelPct)
-        assertTrue("остаток по ярусу точности, не всегда «примерно»", model.approximate)
+        assertTrue("отсчёт по уровню, но ещё <примерно>", model.approximate)
     }
 
     @Test
     fun charging_withoutHistory_priorNumber_showsCountdown() {
-        // «Нет истории зарядок»: движок подставляет в слот истории приор
-        // типа подключения — виджет показывает CHARGING с числом, а не
-        // состояние сбора данных (спека battery-widget).
+        // «До 100% с первой секунды»: прошлых сессий нет, но приор типа
+        // подключения уже даёт число — заглушки не показываем.
         val model = WidgetText.model(
-            state(level = 35, plugged = true, remainingSec = 6_714L),
-            tracking = true
+            state(level = 35, plugged = true, remainingSec = 6_714L)
         )
         assertEquals(WidgetMode.CHARGING, model.mode)
         assertEquals(6_714L, model.remainingSec)
@@ -92,11 +93,10 @@ class WidgetTextTest {
 
     @Test
     fun charging_withoutNumber_hidesTime_notPlaceholderText() {
-        // Модель не выдумывает тексты: числа нет — строка времени просто
-        // отсутствует, «Измеряю…» больше негде взяться.
+        // Числа нет — строка времени просто скрывается, «Измеряю…» на
+        // виджете не появляется.
         val model = WidgetText.model(
-            state(level = 35, plugged = true, remainingSec = null),
-            tracking = true
+            state(level = 35, plugged = true, remainingSec = null)
         )
         assertEquals(WidgetMode.CHARGING, model.mode)
         assertNull(model.remainingSec)
@@ -111,35 +111,33 @@ class WidgetTextTest {
                 plugged = true,
                 remainingSec = 900L,
                 accuracy = ForecastAccuracy.PRECISE
-            ),
-            tracking = true
+            )
         )
         assertEquals(false, model.approximate)
     }
 
     @Test
     fun fullCharge_showsFullState_notZeroCountdown() {
-        // «Зарядка завершена»: состояние полного заряда, а не нулевой отсчёт.
+        // «Зарядка завершена»: виджет показывает состояние, а не нулевой
+        // отсчёт.
         val model = WidgetText.model(
-            state(level = 100, plugged = true, isFull = true, remainingSec = 0L),
-            tracking = true
+            state(level = 100, plugged = true, isFull = true, remainingSec = 0L)
         )
         assertEquals(WidgetMode.FULL, model.mode)
-        assertNull("полный заряд — не отсчёт, даже если конвейер вернул 0", model.remainingSec)
+        assertNull("полный заряд — не отсчёт, даже если пришёл 0", model.remainingSec)
         assertEquals(100, model.levelPct)
     }
 
     @Test
     fun unplugged_withPriorEstimate_isApproximateDischarge() {
-        // Приор «полный заряд ≈ 24 ч»: 58% × 24 ч = 50 112 с — число
-        // есть с первой секунды, текстов-заглушек нет.
+        // Приор «полный заряд ≈ 24 ч»: 58% × 24 ч = 50 112 с — число есть
+        // с первой секунды, текстов-заглушек нет.
         val model = WidgetText.model(
             state(
                 level = 42,
                 plugged = false,
                 discharge = DischargeEstimate(remainingSec = 50_112L)
-            ),
-            tracking = true
+            )
         )
         assertEquals(WidgetMode.DISCHARGE, model.mode)
         assertEquals(50_112L, model.remainingSec)
@@ -152,8 +150,7 @@ class WidgetTextTest {
         // Числа нет только у отключённого оценщика (консервативный
         // режим) — пустое содержимое, без текста-заглушки.
         val model = WidgetText.model(
-            state(level = 42, plugged = false, discharge = DischargeEstimate.NONE),
-            tracking = true
+            state(level = 42, plugged = false, discharge = DischargeEstimate.NONE)
         )
         assertEquals(WidgetMode.NO_DATA, model.mode)
         assertNull(model.remainingSec)
@@ -162,24 +159,40 @@ class WidgetTextTest {
 
     @Test
     fun stoppedTracking_neverShowsStaleNumber() {
-        // «Фоновое слежение остановлено»: любое число могло замерзнуть —
-        // видимо состояние остановки, а не застывшее значение.
+        // «Слежение остановлено»: любое число могло замерзнуть —
+        // виджет честно показывает остановку, а не последнее значение.
         val model = WidgetText.model(
             state(
                 level = 60,
                 plugged = true,
                 remainingSec = 5_400L,
-                discharge = DischargeEstimate(remainingSec = 39_600L)
-            ),
-            tracking = false
+                discharge = DischargeEstimate(remainingSec = 39_600L),
+                tracking = TrackingHealth(status = TrackingStatus.STOPPED)
+            )
         )
         assertEquals(WidgetMode.NOT_TRACKING, model.mode)
-        assertNull("застрявший отсчёт не должен показываться", model.remainingSec)
+        assertNull("застывший отсчёт не показывается", model.remainingSec)
+    }
+
+    @Test
+    fun startingTracking_isTreatedAsOperational() {
+        // Холодный старт: STARTING ещё не RUNNING, но виджет не должен
+        // мигать «слежение остановлено» на время запуска сервиса.
+        val model = WidgetText.model(
+            state(
+                level = 60,
+                plugged = true,
+                remainingSec = 5_400L,
+                tracking = TrackingHealth(status = TrackingStatus.STARTING)
+            )
+        )
+        assertEquals(WidgetMode.CHARGING, model.mode)
+        assertEquals(5_400L, model.remainingSec)
     }
 
     @Test
     fun noStateYet_showsNoData() {
-        val model = WidgetText.model(state(level = null), tracking = true)
+        val model = WidgetText.model(state(level = null))
         assertEquals(WidgetMode.NO_DATA, model.mode)
         assertNull(model.remainingSec)
         assertNull(model.levelPct)
@@ -187,27 +200,27 @@ class WidgetTextTest {
 
     @Test
     fun sizeBucket_picksNarrowStrip_forOneRowCell() {
-        // Полоса 1×3: ширина ячейки привычная, высота — одна строка.
+        // Полоса 1×3: ширина любая, высота — одна строка.
         assertEquals(WidgetSize.NARROW, WidgetText.sizeBucket(210, 80))
-        // Низкая, но широкая ячейка тоже узкая: три строки не влезают по высоте.
+        // Широкая, но низкая ячейка тоже узкая: по высоте не влезает.
         assertEquals(WidgetSize.NARROW, WidgetText.sizeBucket(400, 80))
-        // Очень узкая ячейка — тоже полоса, там нет места даже строке.
+        // Очень узкая ячейка — тоже узкая, там всё равно одна полоса.
         assertEquals(WidgetSize.NARROW, WidgetText.sizeBucket(130, 200))
     }
 
     @Test
     fun sizeBucket_keepsMedium_forTypicalCell() {
-        // Привычный 3×2 (180×110 dp и крупнее) — средний бакет.
+        // Привычная 3×2 (180×110 dp в минимуме) — средний бакет.
         assertEquals(WidgetSize.MEDIUM, WidgetText.sizeBucket(180, 110))
         assertEquals(WidgetSize.MEDIUM, WidgetText.sizeBucket(320, 170))
     }
 
     @Test
     fun sizeBucket_picksWide_forLargeField() {
-        // Широкое/высокое поле — крупные кегли.
+        // Широкая/высокая ячейка — крупный бакет.
         assertEquals(WidgetSize.WIDE, WidgetText.sizeBucket(340, 180))
         assertEquals(WidgetSize.WIDE, WidgetText.sizeBucket(420, 300))
-        // Широко, но низко — не wide: место есть только по одной оси.
+        // Широкая, но низкая — не wide: высоты только на строку.
         assertEquals(WidgetSize.MEDIUM, WidgetText.sizeBucket(420, 140))
     }
 }

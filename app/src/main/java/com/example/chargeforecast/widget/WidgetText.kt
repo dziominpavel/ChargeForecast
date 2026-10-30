@@ -65,13 +65,14 @@ object WidgetText {
         else -> WidgetSize.MEDIUM
     }
 
-    fun model(state: SessionState, tracking: Boolean): WidgetModel {
+    fun model(state: SessionState): WidgetModel {
         val level = state.snapshot?.levelPct
 
         // Слежение не работает — данные могли замерзнуть на последнем
         // числе. Честнее сказать об этом, чем показать устаревшее
-        // (риски design.md, спека battery-widget).
-        if (!tracking) {
+        // (риски design.md, спека battery-widget). STARTING считается
+        // рабочим, чтобы виджет не мигал при холодном старте.
+        if (!state.tracking.isOperational) {
             return WidgetModel(WidgetMode.NOT_TRACKING, null, level, false)
         }
         if (state.snapshot == null) {

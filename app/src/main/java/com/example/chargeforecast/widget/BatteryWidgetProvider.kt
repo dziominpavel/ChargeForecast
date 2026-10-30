@@ -1,6 +1,5 @@
 package com.example.chargeforecast.widget
 
-import android.app.ActivityManager
 import android.app.PendingIntent
 import android.appwidget.AppWidgetManager
 import android.appwidget.AppWidgetProvider
@@ -13,7 +12,6 @@ import android.widget.RemoteViews
 import com.example.chargeforecast.ChargeForecastApplication
 import com.example.chargeforecast.MainActivity
 import com.example.chargeforecast.R
-import com.example.chargeforecast.service.ChargeForecastService
 import com.example.chargeforecast.settings.SettingsCache
 import com.example.chargeforecast.ui.ForecastText
 
@@ -92,20 +90,9 @@ class BatteryWidgetProvider : AppWidgetProvider() {
             val app = context.applicationContext as? ChargeForecastApplication
             val state = app?.sessionMonitor?.state?.value
                 ?: return WidgetModel(WidgetMode.NO_DATA, null, null, false)
-            return WidgetText.model(state, isTrackingRunning(context))
-        }
-
-        // Работает ли фоновое слежение. getRunningServices с API 26 отдаёт
-        // только сервисы собственного приложения — ровно то, что нужно;
-        // несмотря на deprecated-статус именно этот случай он и покрывает.
-        // Отказ (OEM запретил доступ) трактуем как «не работает»: виджет
-        // честно скажет об остановке, а не покажет застывшее число.
-        fun isTrackingRunning(context: Context): Boolean = try {
-            val activityManager = context.getSystemService(ActivityManager::class.java)
-            activityManager?.getRunningServices(Int.MAX_VALUE)
-                ?.any { it.service.className == ChargeForecastService::class.java.name } == true
-        } catch (_: Exception) {
-            false
+            // Живость слежения приходит в том же состоянии, что экран;
+            // deprecated getRunningServices() больше не нужен.
+            return WidgetText.model(state)
         }
 
         private fun render(
