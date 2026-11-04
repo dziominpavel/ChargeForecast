@@ -1,6 +1,8 @@
 # ChargeForecast — правила для AI-агента
 
 Единый IDE-нейтральный источник always-on правил. Читается любым агентом (Cursor, Devin Desktop, Devin CLI и др.).
+OpenSpec-скиллы: `.cursor/skills/`, `.devin/skills/`, `.opencode/skills/`, `.dsh/skills/`; команды: `.cursor/commands/opsx-*.md`, `.devin/workflows/opsx-*.md`, `.opencode/commands/opsx-*.md`.
+В DeepSeek Harness файловых слэш-команд нет: команда — это навык. `/opsx-*` там работают как навыки-алиасы, ведущие к `openspec-*` (см. `.dsh/README.md`).
 
 ## Контекст проекта
 
@@ -50,6 +52,7 @@ Android-приложение на **Kotlin** для отслеживания п�
 1. **Сверяйся с `README.md`** — актуальное описание и статус.
 2. **Версии и сборка:** зависимости из `gradle/libs.versions.toml`; версия приложения в файле `version` — автобампа при assemble/install/bundle нет.
 3. **Тема:** новый UI — только через токены дизайн-системы (`MaterialTheme.colorScheme`, `MaterialTheme.typography`). Не вводить inline `Color(0xFF...)`, `.dp` и хардкод-формы в новых местах — выносить в `ui/theme/`.
+4. **Новые фичи — через OpenSpec:** спеки подсистем — `openspec/specs/*/spec.md`, поток `/opsx-propose` → review → `/opsx-apply` → `/opsx-archive`, проверка `openspec validate --all`.
 
 ## Приоритеты при доработках
 - Не ломать точку входа и тему: экраны получают данные и колбэки из ViewModel (когда появится).
@@ -60,6 +63,33 @@ Android-приложение на **Kotlin** для отслеживания п�
 - Код на Kotlin в стиле проекта: корутины, StateFlow, Compose.
 - Комментарии и сообщения пользователю на русском, код и имена — на английском.
 - При работе с батареей учитывать, что ток/напряжение доступны не на всех устройствах — иметь fallback на расчёт по дельте уровня заряда.
+
+## OpenSpec (spec-driven development)
+
+Структура: `openspec/` — `specs/` (главные спеки по подсистемам), `changes/` (активные изменения), `changes/archive/`.
+
+### Workflow
+
+- `/opsx-propose <идея>` — создать change с артефактами (proposal.md, design.md, tasks.md, specs/).
+- `/opsx-apply` — реализовать задачи из текущего change по спеке.
+- `/opsx-archive` — заархивировать завершённый change и обновить основные specs.
+- `/opsx-explore` — исследовать кодовую базу перед предложением.
+- `/opsx-sync` — перенести delta-спеки в основные без архивации; `/opsx-update` — пересмотреть план change.
+
+### Когда использовать
+
+- Новые фичи и нетривиальные изменения — через OpenSpec.
+- Мелкие правки (опечатка, точечный багфикс) — можно напрямую.
+- Артефакты на **русском**, normative keywords — **MUST/SHALL/MUST NOT** (правила в `openspec/config.yaml`).
+- Проверка: `openspec validate --all`.
+
+### Capabilities
+
+`app-settings`, `background-tracking`, `battery-widget`, `charge-forecast`, `discharge-estimate`.
+
+### В DeepSeek Harness
+
+`/opsx-*` — навыки-алиасы в `.dsh/skills/`, `/openspec-*` — копии из `.opencode/skills/`; как обновлять и что где лежит — `.dsh/README.md`.
 
 <!-- versioning:begin -->
 ## Версии и changelog (обязательно)
