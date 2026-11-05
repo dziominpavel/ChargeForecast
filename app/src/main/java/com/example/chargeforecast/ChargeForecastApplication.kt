@@ -74,7 +74,14 @@ class ChargeForecastApplication : Application() {
             scope = appScope,
             clockMs = SystemClock::elapsedRealtime
         )
-        trackingHealthStore = TrackingHealthStore(onEvent = diagLog::record)
+        // Причина последней остановки переживает смерть процесса: сервис
+        // запишет её при смене статуса, а экран и виджет прочитают при
+        // старте (design D4).
+        trackingHealthStore = TrackingHealthStore(
+            onEvent = diagLog::record,
+            onPersist = sessionRuntimeStore::saveTrackingHealth,
+            initial = sessionRuntimeStore.loadTrackingHealth()?.health
+        )
         sessionRuntimeStore.saveBootIdentity(bootIdentity)
 
         dischargeJournal = DischargeJournal(File(filesDir, JOURNAL_FILE_NAME))

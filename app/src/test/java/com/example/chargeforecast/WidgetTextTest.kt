@@ -12,6 +12,7 @@ import com.example.chargeforecast.widget.WidgetMode
 import com.example.chargeforecast.widget.WidgetSize
 import com.example.chargeforecast.widget.WidgetText
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -52,7 +53,8 @@ class WidgetTextTest {
         remainingSec: Long? = null,
         accuracy: ForecastAccuracy = ForecastAccuracy.APPROXIMATE,
         discharge: DischargeEstimate = DischargeEstimate.NONE,
-        tracking: TrackingHealth = TrackingHealth.running()
+        tracking: TrackingHealth = TrackingHealth.running(),
+        dataAgeMs: Long = 0L
     ): SessionState {
         val snapshot = level?.let { snap(it, plugged) }
         return SessionState(
@@ -64,7 +66,8 @@ class WidgetTextTest {
             },
             sessionAgeMs = 0L,
             discharge = discharge,
-            tracking = tracking
+            tracking = tracking,
+            dataAgeMs = dataAgeMs
         )
     }
 
@@ -158,20 +161,74 @@ class WidgetTextTest {
     }
 
     @Test
-    fun stoppedTracking_neverShowsStaleNumber() {
-        // «Слежение остановлено»: любое число могло замерзнуть —
-        // виджет честно показывает остановку, а не последнее значение.
+    fun freshDataWithoutService_showsNumbers_andBackgroundInactiveState() {
+        // Спека battery-widget, «Данные свежие, сервис не подтверждён»:
+        // числа актуальные, подпись — «фон не активен» с действием, и ни
+        // слова про замершие данные.
         val model = WidgetText.model(
             state(
                 level = 60,
                 plugged = true,
                 remainingSec = 5_400L,
-                discharge = DischargeEstimate(remainingSec = 39_600L),
                 tracking = TrackingHealth(status = TrackingStatus.STOPPED)
             )
         )
-        assertEquals(WidgetMode.NOT_TRACKING, model.mode)
+        assertEquals(WidgetMode.BACKGROUND_INACTIVE, model.mode)
+        assertEquals(5_400L, model.remainingSec)
+        assertEquals(60, model.levelPct)
+        assertTrue("состояние должно предлагать возобновление", model.resumeAction)
+    }
+
+    @Test
+    fun staleData_hidesNumbers_andShowsAge() {
+        // Спека background-tracking: старше порога — «данные не
+        // обновляются» с возрастом. Застывшее число не показываем.
+        val model = WidgetText.model(
+            state(
+                level = 60,
+                plugged = true,
+                remainingSec = 5_400L,
+                dataAgeMs = 200_000L
+            )
+        )
+        assertEquals(WidgetMode.STALE, model.mode)
         assertNull("застывший отсчёт не показывается", model.remainingSec)
+        assertNull("устаревший уровень тоже не число", model.levelPct)
+        assertEquals("три минуты без замера", 3L, model.dataAgeMinutes)
+        assertTrue(model.resumeAction)
+    }
+
+    @Test
+    fun staleData_winsOverStoppedService() {
+        // И данные старые, и сервис не подтверждён: пользователю важнее
+        // замершие данные — это они делают числа ложными.
+        val model = WidgetText.model(
+            state(
+                level = 60,
+                plugged = true,
+                remainingSec = 5_400L,
+                tracking = TrackingHealth(status = TrackingStatus.STOPPED),
+                dataAgeMs = 600_000L
+            )
+        )
+        assertEquals(WidgetMode.STALE, model.mode)
+        assertNull(model.remainingSec)
+    }
+
+    @Test
+    fun fullCharge_withoutService_keepsFullState() {
+        // Полный заряд — терминальное состояние: возобновлять нечего,
+        // подпись «заряжено» важнее статуса фона.
+        val model = WidgetText.model(
+            state(
+                level = 100,
+                plugged = true,
+                isFull = true,
+                tracking = TrackingHealth(status = TrackingStatus.STOPPED)
+            )
+        )
+        assertEquals(WidgetMode.FULL, model.mode)
+        assertFalse("возобновлять нечего", model.resumeAction)
     }
 
     @Test

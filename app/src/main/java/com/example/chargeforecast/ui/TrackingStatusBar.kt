@@ -17,22 +17,27 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
-import com.example.chargeforecast.R
 import com.example.chargeforecast.tracking.TrackingHealth
+import com.example.chargeforecast.tracking.TrackingLiveness
 import com.example.chargeforecast.tracking.TrackingStatus
 import com.example.chargeforecast.ui.theme.ChargeDimens
 
 // Постоянная строка состояния слежения. Она не конкурирует с главным
 // числом «до 100%», но всегда объясняет, обновляются ли данные, и даёт
-// действие, если слежение остановлено.
+// действие, если данные замерли или фоновое слежение не подтверждено
+// (спека background-tracking, design D2).
 @Composable
 fun TrackingStatusBar(
     health: TrackingHealth,
+    // Возраст последнего замера в минутах: «данные не обновляются N мин».
+    dataAgeMinutes: Long,
     onRestart: () -> Unit,
     onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val status = TrackingStatusText.of(health, dataAgeMinutes)
     Surface(
         // Edge-to-edge: строка не должна уходить под системную навигацию.
         modifier = modifier
@@ -54,27 +59,33 @@ fun TrackingStatusBar(
                 Box(
                     modifier = Modifier
                         .size(ChargeDimens.StatusDotSize)
-                        .background(dotColor(health.status), CircleShape)
+                        .background(dotColor(health), CircleShape)
                 )
                 Text(
-                    text = stringResource(statusTextRes(health.status)),
+                    // Возраст есть только у «данных не обновляются»: у
+                    // остальных строк формат без аргумента.
+                    text = if (status.ageMinutes > 0L) {
+                        stringResource(status.textRes, status.ageMinutes)
+                    } else {
+                        stringResource(status.textRes)
+                    },
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.weight(1f)
                 )
-                when {
-                    health.needsRestart -> TextButton(onClick = onRestart) {
-                        Text(stringResource(R.string.tracking_restart))
+                when (status.action) {
+                    TrackingAction.RESUME -> TextButton(onClick = onRestart) {
+                        Text(stringResource(status.actionLabelRes ?: status.textRes))
                     }
-                    health.status == TrackingStatus.NO_PERMISSION ->
-                        TextButton(onClick = onOpenSettings) {
-                            Text(stringResource(R.string.tracking_open_settings))
-                        }
+                    TrackingAction.OPEN_SETTINGS -> TextButton(onClick = onOpenSettings) {
+                        Text(stringResource(status.actionLabelRes ?: status.textRes))
+                    }
+                    TrackingAction.NONE -> Unit
                 }
             }
-            if (health.status == TrackingStatus.BLOCKED_BY_OS) {
+            status.hintRes?.let { hint ->
                 Text(
-                    text = stringResource(R.string.tracking_blocked_hint),
+                    text = stringResource(hint),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -84,18 +95,13 @@ fun TrackingStatusBar(
 }
 
 @Composable
-private fun dotColor(status: TrackingStatus) = when (status) {
-    TrackingStatus.RUNNING,
-    TrackingStatus.STARTING -> MaterialTheme.colorScheme.primary
-    TrackingStatus.STOPPED -> MaterialTheme.colorScheme.onSurfaceVariant
-    TrackingStatus.BLOCKED_BY_OS,
-    TrackingStatus.NO_PERMISSION -> MaterialTheme.colorScheme.error
-}
-
-private fun statusTextRes(status: TrackingStatus): Int = when (status) {
-    TrackingStatus.STARTING -> R.string.tracking_starting
-    TrackingStatus.RUNNING -> R.string.tracking_running
-    TrackingStatus.STOPPED -> R.string.tracking_stopped
-    TrackingStatus.BLOCKED_BY_OS -> R.string.tracking_blocked
-    TrackingStatus.NO_PERMISSION -> R.string.tracking_no_permission
+private fun dotColor(health: TrackingHealth): Color = when {
+    // Отказ системы — ошибка; фоновый сервис просто не подтверждён —
+    // нейтрально: данные при этом могут быть свежими.
+    health.status == TrackingStatus.NO_PERMISSION ||
+        health.status == TrackingStatus.BLOCKED_BY_OS -> MaterialTheme.colorScheme.error
+    health.liveness == TrackingLiveness.DATA_STALE -> MaterialTheme.colorScheme.error
+    health.liveness == TrackingLiveness.BACKGROUND_INACTIVE ->
+        MaterialTheme.colorScheme.onSurfaceVariant
+    else -> MaterialTheme.colorScheme.primary
 }

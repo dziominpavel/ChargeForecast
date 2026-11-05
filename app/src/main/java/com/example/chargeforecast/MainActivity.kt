@@ -104,6 +104,8 @@ fun ChargeForecastApp(viewModel: SessionViewModel = viewModel()) {
             if (!showSettings) {
                 TrackingStatusBar(
                     health = state.tracking,
+                    // Возраст замера для «данных не обновляются N мин».
+                    dataAgeMinutes = state.dataAgeMs / 60_000L,
                     onRestart = viewModel::restartTracking,
                     onOpenSettings = {
                         context.startActivity(

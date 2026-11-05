@@ -42,13 +42,16 @@
     <string name="notification_channel_tracking">Слежение за зарядкой</string>
     <string name="notification_channel_tracking_desc">Служебное уведомление. Позволяет приложению самому замечать вставку кабеля и обновлять виджет, не открывая приложение.</string>
 
-    <!-- Статус фонового слежения на главном экране -->
+    <!-- Статус фонового слежения на главном экране. Статус сервиса
+         показываем только когда он объясняет поведение; «данные не
+         обновляются» — по возрасту замера (спека background-tracking). -->
     <string name="tracking_running">Слежение активно</string>
     <string name="tracking_starting">Запускаю слежение…</string>
-    <string name="tracking_stopped">Слежение остановлено</string>
+    <string name="tracking_background_inactive">Фон не активен</string>
+    <string name="tracking_data_stale">Данные не обновляются %1$d мин</string>
     <string name="tracking_blocked">Система остановила слежение</string>
     <string name="tracking_no_permission">Нет разрешения на фоновую работу</string>
-    <string name="tracking_restart">Перезапустить</string>
+    <string name="tracking_resume">Возобновить</string>
     <string name="tracking_open_settings">Настройки</string>
     <string name="tracking_blocked_hint">Проверьте автозапуск и отключите оптимизацию батареи для приложения.</string>
 
@@ -75,12 +78,17 @@
     <!-- Виджет: оценка работы телефона — всегда приблизительная -->
     <string name="widget_charging_title">До 100%</string>
     <string name="widget_discharge_title">Осталось работать</string>
-    <string name="widget_not_tracking">Слежение остановлено — откройте приложение</string>
+    <!-- Фон не подтверждён, данные свежие: числа остаются, подпись зовёт
+         возобновить слежение (спека battery-widget). -->
+    <string name="widget_background_inactive">Фон не активен — возобновить</string>
+    <!-- Данные замерли: числа скрыты, показан возраст последнего замера. -->
+    <string name="widget_stale_title">Данные не обновляются %1$d мин</string>
     <string name="widget_full_title">Заряжено полностью</string>
     <!-- Короткие подписи для узкого бакета (полоса 1×3): полная подпись
          в одну строку не влезает, обрезка скроет главное. -->
     <string name="widget_short_charging">До 100%</string>
     <string name="widget_short_full">Заряжено</string>
     <string name="widget_short_discharge">Осталось</string>
-    <string name="widget_short_not_tracking">Нет слежения</string>
+    <string name="widget_short_background_inactive">Возобновить</string>
+    <string name="widget_short_stale">Не обновляются %1$d мин</string>
 </resources>

@@ -9,6 +9,7 @@ import com.example.chargeforecast.diag.DiagTick
 import com.example.chargeforecast.forecast.ChargeForecast
 import com.example.chargeforecast.forecast.DischargeEstimate
 import com.example.chargeforecast.forecast.DischargeEstimator
+import com.example.chargeforecast.tracking.DataFreshness
 import com.example.chargeforecast.tracking.TrackingHealth
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -40,9 +41,29 @@ data class SessionState(
     // Живость фонового слежения: экран и виджет показывают её постоянно.
     val tracking: TrackingHealth = TrackingHealth.running(),
     // Какие датчики батареи реально отдают данные: экран объясняет fallback.
-    val dataQuality: BatteryDataQuality = BatteryDataQuality.UNKNOWN
+    val dataQuality: BatteryDataQuality = BatteryDataQuality.UNKNOWN,
+    // Возраст последнего замера батареи на момент эмиссии состояния. По
+    // нему отличают «сервис умер при живых данных» от «данные замерли»
+    // (design D1, D2).
+    val dataAgeMs: Long = 0L
 ) {
     val isPlugged: Boolean get() = snapshot?.isPlugged == true
+
+    // Свежесть по возрасту замера, а не по флагу сервиса: порог зависит от
+    // режима (зарядка/простой), правило живёт в DataFreshness.
+    val dataFresh: Boolean
+        get() = DataFreshness.isFresh(dataAgeMs, isPlugged)
+
+    // Состояние на момент показа: возраст пересчитывается от метки снимка.
+    // Виджет обновляется по системному интервалу (до 30 минут) и после
+    // долгого простоя процесса иначе показал бы старое число как свежее.
+    fun aged(nowMs: Long): SessionState {
+        val age = snapshot?.let { (nowMs - it.timestampMs).coerceAtLeast(0L) } ?: dataAgeMs
+        return copy(
+            dataAgeMs = age,
+            tracking = tracking.copy(dataFresh = DataFreshness.isFresh(age, isPlugged))
+        )
+    }
 }
 
 // Склеивает поток снапшотов батареи и чистый движок сессии.
@@ -143,9 +164,12 @@ class ChargeSessionMonitor(
             // Без этого первая секунда после вставки кабеля считала бы
             // возраст от последнего тика (которого давно не было), а не
             // от подключения.
-            val state = engine.update(
-                snapshot,
-                maxOf(nowMs, snapshot?.timestampMs ?: 0L)
+            val now = maxOf(nowMs, snapshot?.timestampMs ?: 0L)
+            val state = engine.update(snapshot, now).copy(
+                // Возраст — от метки самого замера, а не от тика: в простое
+                // тикер молчит, и свежесть обязана следовать за снапшотом
+                // (design D1).
+                dataAgeMs = snapshot?.let { (now - it.timestampMs).coerceAtLeast(0L) } ?: 0L
             )
             // Снимок пишется с троттлингом: после kill сессия продолжится
             // с отставанием не более 30 секунд.
@@ -155,7 +179,11 @@ class ChargeSessionMonitor(
 
     val state: StateFlow<SessionState> =
         combine(engineState, trackingHealthFlow, dataQualityFlow) { base, health, quality ->
-            base.copy(tracking = health, dataQuality = quality)
+            // Свежесть знает только монитор: сервис говорит лишь о себе.
+            base.copy(
+                tracking = health.copy(dataFresh = base.dataFresh),
+                dataQuality = quality
+            )
         }.stateIn(
             scope,
             SharingStarted.Eagerly,

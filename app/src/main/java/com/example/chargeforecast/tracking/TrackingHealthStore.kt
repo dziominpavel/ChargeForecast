@@ -8,15 +8,19 @@ import kotlinx.coroutines.flow.asStateFlow
 
 // Единственный владелец TrackingHealth на процесс. Пишет сервис,
 // читают ChargeSessionMonitor (а через него экран и виджет).
-// Начальное STOPPED честно означает «сервис ещё не подтвердил работу».
-// Каждая смена статуса уходит событием в журнал диагностики: без него
-// после перезапуска процесса не отличить «убила оболочка» от
-// «не пытались запускать».
+// Начальное STOPPED честно означает «сервис ещё не подтвердил работу»,
+// если в runtime-store не нашлось сохранённой причины остановки.
+// Каждая смена статуса уходит событием в журнал диагностики и (редко) в
+// runtime-store: без этого после перезапуска процесса не отличить
+// «убила оболочка» от «не пытались запускать» (design D4).
 class TrackingHealthStore(
-    private val onEvent: (DiagEvent) -> Unit = {}
+    private val onEvent: (DiagEvent) -> Unit = {},
+    // Персист статуса: вызывается только на реальной смене статуса.
+    private val onPersist: (TrackingHealth) -> Unit = {},
+    initial: TrackingHealth? = null
 ) {
 
-    private val _health = MutableStateFlow(TrackingHealth())
+    private val _health = MutableStateFlow(initial ?: TrackingHealth())
     val health: StateFlow<TrackingHealth> = _health.asStateFlow()
 
     fun markStarting() {
@@ -57,7 +61,8 @@ class TrackingHealthStore(
     }
 
     // Повтор того же статуса молчит: onStartCommand зовёт markRunning на
-    // каждом старте, и журнал не должен заполняться одинаковыми строками.
+    // каждом старте, и журнал не должен заполняться одинаковыми строками,
+    // а runtime-store — одинаковыми записями.
     private fun publish(next: TrackingHealth) {
         val previous = _health.value
         _health.value = next
@@ -69,5 +74,8 @@ class TrackingHealthStore(
                     ";why=" + (next.failure?.name ?: "-")
             )
         )
+        // Пишем причину остановки в runtime-store: она переживёт смерть
+        // процесса, и экран не покажет нейтральное «нет данных».
+        onPersist(next)
     }
 }

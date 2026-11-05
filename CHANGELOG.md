@@ -8,12 +8,23 @@
 **Добавлено**
 - В настройках появилось действие «Поделиться диагностикой»: журнал тиков и событий можно отправить с телефона.
 
+**Исправлено**
+- Виджет больше не пишет «слежение остановлено», когда данные свежие, и запускает слежение по нажатию.
+
 ### Добавлено
 - Change: `runtime-diagnostics`.
 - `diag/`: `DiagTick`, `DiagEvent`, `DiagRing`, `DiagText`, `DiagLog` — тик конвейера (1 Гц на зарядке) и события (ёмкость, точность, слежение, датчики, сервис) в `files/diag/session.log` с ротацией 2 × 1 МБ.
 - Выгрузка через `FileProvider` и share-интент; пустой журнал объясняется текстом.
 - `SysfsProbe`: отказ чтения узла запоминается на процесс — повторных `avc: denied` и лишних чтений в hot-path нет.
 - Тесты: `DiagRingTest`, `DiagTextTest`, `DiagLogTest`, `DiagExportTest`, `SysfsProbeTest`; расширены `SessionEngineTest`, `TrackingHealthStoreTest`, `BatterySensorTrackerTest` (267/267 JVM-тестов).
+
+### Исправлено
+- Change: `tracking-liveness`.
+- Живость слежения — производная: свежесть замера (2 мин на зарядке, 90 мин в простое) плюс подтверждённый foreground-сервис (`SessionState.dataAgeMs`, `TrackingHealth.liveness`).
+- Виджет: режимы `STALE` и `BACKGROUND_INACTIVE`; числа скрываются только при устаревших данных, возобновление — `PendingIntent.getForegroundService` по строке состояния.
+- Причина остановки переживает смерть процесса: `SessionRuntimeStore` хранит статус, причину и метку.
+- Замер канала на EMUI 12 (MNA-LX9, Android 12): система форсирует служебный канал FGS до LOW (`mImportance=2` при запрошенном `NONE`), уведомление видно в шторке — `IMPORTANCE_NONE` оставлен, ночной замер перезапусков закрыт как непроводимый.
+- Тесты: `WidgetActionsTest`, `TrackingStatusTextTest`; расширены `WidgetTextTest`, `TrackingHealthTest`, `TrackingHealthStoreTest`, `SessionRuntimeStoreTest`, `ChargeSessionMonitorTest` (289/289 JVM-тестов).
 
 ## [0.6.0] — 2026-10-31 (MINOR)
 

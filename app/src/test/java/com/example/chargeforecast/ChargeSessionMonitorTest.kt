@@ -365,6 +365,32 @@ class ChargeSessionMonitorTest {
     }
 
     @Test
+    fun staleSnapshot_reportsAgeBeyondChargingThreshold() {
+        // Свежесть — производная метки замера, а не флага сервиса: старый
+        // снапшот даёт возраст больше порога зарядки, свежий — ноль
+        // (design D1, спека background-tracking).
+        val snapshots = MutableStateFlow<BatterySnapshot?>(null)
+        var nowMs = 0L
+        val monitor = monitor(snapshots) { nowMs }
+
+        snapshots.value = snap(0L, 50, plugged = true)
+        val fresh = await(monitor) { it.isPlugged }
+        assertEquals(0L, fresh.dataAgeMs)
+        assertTrue("свежий замер — данные свежие", fresh.dataFresh)
+
+        // Прошло больше двух минут, а нового замера нет: метка прежняя.
+        // Ждём тикер: combine берёт последнюю метку тика, и возраст
+        // пересчитывается на ближайшем тике (1 Гц на зарядке).
+        nowMs = 200_000L
+        snapshots.value = snap(0L, 51, plugged = true)
+        val stale = await(monitor) { it.snapshot?.levelPct == 51 && it.dataAgeMs > 0L }
+
+        assertEquals(200_000L, stale.dataAgeMs)
+        assertEquals(51, stale.snapshot!!.levelPct)
+        assertTrue("три минуты без замера — больше порога зарядки", !stale.dataFresh)
+    }
+
+    @Test
     fun errorReportedBeforeUiSubscription_isDeliveredOnce() = runBlocking {
         val monitor = monitor(MutableStateFlow(null)) { 0L }
 

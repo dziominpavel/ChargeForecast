@@ -7,11 +7,13 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
+import android.os.SystemClock
 import android.view.View
 import android.widget.RemoteViews
 import com.example.chargeforecast.ChargeForecastApplication
 import com.example.chargeforecast.MainActivity
 import com.example.chargeforecast.R
+import com.example.chargeforecast.service.ChargeForecastService
 import com.example.chargeforecast.settings.SettingsCache
 import com.example.chargeforecast.ui.ForecastText
 
@@ -86,13 +88,16 @@ class BatteryWidgetProvider : AppWidgetProvider() {
         private const val OPTION_HEIGHT_KEY = "appWidgetHeight"
 
         // Модель по текущему состоянию процесса — без ожидания событий.
+        // Возраст пересчитывается на момент отрисовки: системный вызов
+        // onUpdate приходит редко, а «данные замерли» — именно то, что
+        // виджет обязан показать честно (design D1).
         fun currentModel(context: Context): WidgetModel {
             val app = context.applicationContext as? ChargeForecastApplication
             val state = app?.sessionMonitor?.state?.value
                 ?: return WidgetModel(WidgetMode.NO_DATA, null, null, false)
             // Живость слежения приходит в том же состоянии, что экран;
             // deprecated getRunningServices() больше не нужен.
-            return WidgetText.model(state)
+            return WidgetText.model(state.aged(SystemClock.elapsedRealtime()))
         }
 
         private fun render(
@@ -147,7 +152,7 @@ class BatteryWidgetProvider : AppWidgetProvider() {
 
                 // Тап по виджету открывает экран сессии — полный контекст,
                 // который одну строку вместить не может (спека battery-widget).
-                setOnClickPendingIntent(R.id.widget_root, openAppIntent(context))
+                applyActions(context, this, model)
             }
 
         // Узкий бакет: одна строка — уровень, время, короткая подпись.
@@ -174,7 +179,7 @@ class BatteryWidgetProvider : AppWidgetProvider() {
                 }
 
                 setTextViewText(R.id.widget_title, shortTitle(context, model))
-                setOnClickPendingIntent(R.id.widget_root, openAppIntent(context))
+                applyActions(context, this, model)
             }
 
         private fun shortTitle(context: Context, model: WidgetModel): String =
@@ -182,7 +187,10 @@ class BatteryWidgetProvider : AppWidgetProvider() {
                 WidgetMode.CHARGING -> context.getString(R.string.widget_short_charging)
                 WidgetMode.FULL -> context.getString(R.string.widget_short_full)
                 WidgetMode.DISCHARGE -> context.getString(R.string.widget_short_discharge)
-                WidgetMode.NOT_TRACKING -> context.getString(R.string.widget_short_not_tracking)
+                WidgetMode.BACKGROUND_INACTIVE ->
+                    context.getString(R.string.widget_short_background_inactive)
+                WidgetMode.STALE ->
+                    context.getString(R.string.widget_short_stale, model.dataAgeMinutes)
                 // Пустое содержимое вместо текста-заглушки.
                 WidgetMode.NO_DATA -> ""
             }
@@ -192,20 +200,47 @@ class BatteryWidgetProvider : AppWidgetProvider() {
                 WidgetMode.CHARGING -> context.getString(R.string.widget_charging_title)
                 WidgetMode.FULL -> context.getString(R.string.widget_full_title)
                 WidgetMode.DISCHARGE -> context.getString(R.string.widget_discharge_title)
-                WidgetMode.NOT_TRACKING -> context.getString(R.string.widget_not_tracking)
+                WidgetMode.BACKGROUND_INACTIVE ->
+                    context.getString(R.string.widget_background_inactive)
+                WidgetMode.STALE ->
+                    context.getString(R.string.widget_stale_title, model.dataAgeMinutes)
                 // Пустое содержимое вместо текста-заглушки.
                 WidgetMode.NO_DATA -> ""
             }
 
-        // null — строку времени показывать не нужно: без числа (режим
-        // ожидания или остановленного слежения) строка просто скрыта.
+        // null — строку времени показывать не нужно: без числа (данные
+        // замерли или ещё не посчитаны) строка просто скрыта.
         private fun time(context: Context, model: WidgetModel): String? =
             when (model.mode) {
                 WidgetMode.FULL -> context.getString(R.string.session_charged)
-                WidgetMode.CHARGING, WidgetMode.DISCHARGE -> model.remainingSec
+                WidgetMode.CHARGING,
+                WidgetMode.DISCHARGE,
+                WidgetMode.BACKGROUND_INACTIVE -> model.remainingSec
                     ?.let { ForecastText.formatRemaining(context, it) }
-                WidgetMode.NOT_TRACKING, WidgetMode.NO_DATA -> null
+                WidgetMode.STALE, WidgetMode.NO_DATA -> null
             }
+
+        // Действия ячейки: корень всегда открывает экран сессии; когда
+        // слежение не подтверждено или данные замерли, строка состояния
+        // становится действием «Возобновить» — тап по остальной площади
+        // по-прежнему открывает приложение (спека battery-widget).
+        private fun applyActions(context: Context, views: RemoteViews, model: WidgetModel) {
+            views.setOnClickPendingIntent(R.id.widget_root, openAppIntent(context))
+            if (model.resumeAction) {
+                views.setOnClickPendingIntent(R.id.widget_title, resumeTrackingIntent(context))
+            }
+        }
+
+        // Запуск слежения прямо из тапа: пользовательское действие — один
+        // из разрешённых платформой контекстов для foreground-сервиса
+        // (design D3). Отказ всё равно обработает start() в сервисе.
+        private fun resumeTrackingIntent(context: Context): PendingIntent =
+            PendingIntent.getForegroundService(
+                context,
+                WidgetActions.RESUME_TRACKING_REQUEST_CODE,
+                Intent(context, WidgetActions.resumeTarget()),
+                WidgetActions.RESUME_FLAGS
+            )
 
         private fun openAppIntent(context: Context): PendingIntent {
             val intent = Intent(context, MainActivity::class.java).apply {
@@ -213,7 +248,7 @@ class BatteryWidgetProvider : AppWidgetProvider() {
             }
             return PendingIntent.getActivity(
                 context,
-                0,
+                WidgetActions.OPEN_APP_REQUEST_CODE,
                 intent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )

@@ -2,7 +2,6 @@ package com.example.chargeforecast.widget
 
 import com.example.chargeforecast.forecast.ForecastAccuracy
 import com.example.chargeforecast.session.SessionState
-
 // Режим виджета: чем он занят. Выбирается состоянием сессии сам, без
 // настройки со стороны пользователя (спека battery-widget).
 enum class WidgetMode {
@@ -13,8 +12,12 @@ enum class WidgetMode {
     // Простой — приблизительное оставшееся время работы (приор или
     // измеренное среднее).
     DISCHARGE,
-    // Слежение остановлено: любое число могло замерзнуть.
-    NOT_TRACKING,
+    // Данные свежие, но foreground-сервис не подтверждён: числа честные,
+    // подпись — с действием «Возобновить» (design D2).
+    BACKGROUND_INACTIVE,
+    // Замерзли сами данные: числа не показываются, только возраст и
+    // действие возобновления.
+    STALE,
     // Состояние ещё не посчитано — пустое содержимое, без текста.
     NO_DATA
 }
@@ -48,7 +51,11 @@ data class WidgetModel(
     val levelPct: Int?,
     // Приблизительность: оценка разряда всегда «примерно», зарядный
     // отсчёт — по ярусу точности конвейера.
-    val approximate: Boolean
+    val approximate: Boolean,
+    // Возраст замера в минутах — для текста «данные не обновляются N мин».
+    val dataAgeMinutes: Long = 0L,
+    // Показывать действие «Возобновить»: тап по строке состояния.
+    val resumeAction: Boolean = false
 )
 
 object WidgetText {
@@ -68,16 +75,37 @@ object WidgetText {
     fun model(state: SessionState): WidgetModel {
         val level = state.snapshot?.levelPct
 
-        // Слежение не работает — данные могли замерзнуть на последнем
-        // числе. Честнее сказать об этом, чем показать устаревшее
-        // (риски design.md, спека battery-widget). STARTING считается
-        // рабочим, чтобы виджет не мигал при холодном старте.
-        if (!state.tracking.isOperational) {
-            return WidgetModel(WidgetMode.NOT_TRACKING, null, level, false)
-        }
+        // До первого снапшота показывать нечего — пустое содержимое,
+        // без текста-заглушки.
         if (state.snapshot == null) {
             return WidgetModel(WidgetMode.NO_DATA, null, null, false)
         }
+        // Свежесть — по возрасту последнего замера, а не по флагу сервиса:
+        // порог зависит от режима (design D1, D2). Замерзшие данные
+        // важнее умершего сервиса — числа не показываем вовсе.
+        if (!state.dataFresh) {
+            return WidgetModel(
+                mode = WidgetMode.STALE,
+                remainingSec = null,
+                levelPct = null,
+                approximate = false,
+                dataAgeMinutes = state.dataAgeMs / 60_000L,
+                resumeAction = true
+            )
+        }
+        val content = contentModel(state, level)
+        // Данные свежие, сервис не подтверждён: числа остаются честными,
+        // меняется только подпись — «фон не активен» с действием.
+        // Полный заряд — терминальное состояние: возобновлять нечего.
+        if (content.mode != WidgetMode.FULL && !state.tracking.backgroundActive) {
+            return content.copy(mode = WidgetMode.BACKGROUND_INACTIVE, resumeAction = true)
+        }
+        return content
+    }
+
+    // Что показывать по актуальным данным: режим и числа. Вынесено
+    // отдельно, чтобы подпись состояния не меняла сами числа.
+    private fun contentModel(state: SessionState, level: Int?): WidgetModel {
         if (state.isPlugged) {
             if (state.forecast.isFull) {
                 return WidgetModel(WidgetMode.FULL, null, level, false)

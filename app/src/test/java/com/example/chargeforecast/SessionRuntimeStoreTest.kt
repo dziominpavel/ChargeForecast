@@ -6,6 +6,9 @@ import com.example.chargeforecast.forecast.DischargeState
 import com.example.chargeforecast.session.ActiveSessionSnapshot
 import com.example.chargeforecast.session.BootIdentity
 import com.example.chargeforecast.session.SessionRuntimeStore
+import com.example.chargeforecast.tracking.TrackingFailure
+import com.example.chargeforecast.tracking.TrackingHealth
+import com.example.chargeforecast.tracking.TrackingStatus
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -194,6 +197,52 @@ class SessionRuntimeStoreTest {
             .putString("active_session_charge_type", "AC")
             .apply()
         assertNull(SessionRuntimeStore(prefs).loadActiveSession())
+    }
+
+    @Test
+    fun trackingHealth_roundTrip_withReasonAndMarker() {
+        // Причина остановки и метка записи переживают смерть процесса:
+        // экран покажет «система остановила слежение», а не «нет данных».
+        val prefs = FakeSharedPreferences()
+        val store = SessionRuntimeStore(prefs) { 42_000L }
+        store.saveTrackingHealth(
+            TrackingHealth(
+                status = TrackingStatus.BLOCKED_BY_OS,
+                failure = TrackingFailure.START_BLOCKED
+            )
+        )
+
+        val restored = store.loadTrackingHealth()!!
+        assertEquals(TrackingStatus.BLOCKED_BY_OS, restored.health.status)
+        assertEquals(TrackingFailure.START_BLOCKED, restored.health.failure)
+        assertEquals(42_000L, restored.updatedAtMs)
+    }
+
+    @Test
+    fun trackingHealth_missingKeys_areNeutral() {
+        // Первый запуск: ключей нет — нейтральное «не сохранено», а не
+        // выдуманный статус.
+        assertNull(SessionRuntimeStore(FakeSharedPreferences()).loadTrackingHealth())
+    }
+
+    @Test
+    fun trackingHealth_runningIsNotRestoredAsAlive() {
+        // Сервис подтверждал работу, но процесс убили: восстанавливать
+        // RUNNING значило бы врать о живости — только причина остановки.
+        val prefs = FakeSharedPreferences()
+        val store = SessionRuntimeStore(prefs) { 0L }
+        store.saveTrackingHealth(TrackingHealth(status = TrackingStatus.RUNNING))
+
+        val restored = store.loadTrackingHealth()!!
+        assertEquals(TrackingStatus.STOPPED, restored.health.status)
+        assertNull(restored.health.failure)
+    }
+
+    @Test
+    fun trackingHealth_corruptStatus_isIgnored() {
+        val prefs = FakeSharedPreferences()
+        prefs.edit().putString("tracking_status", "NOT_A_STATUS").apply()
+        assertNull(SessionRuntimeStore(prefs).loadTrackingHealth())
     }
 
     @Test

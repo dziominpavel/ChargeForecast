@@ -2,14 +2,29 @@ package com.example.chargeforecast.session
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.os.SystemClock
 import com.example.chargeforecast.battery.ChargeType
 import com.example.chargeforecast.forecast.DischargeSample
 import com.example.chargeforecast.forecast.DischargeState
+import com.example.chargeforecast.tracking.TrackingFailure
+import com.example.chargeforecast.tracking.TrackingHealth
+import com.example.chargeforecast.tracking.TrackingStatus
+
+// Восстановленное состояние слежения вместе с меткой записи: по метке
+// видно, насколько свежа причина остановки. Живёт вне backup — это
+// машинное состояние конкретной установки (design D4).
+data class StoredTrackingHealth(
+    val health: TrackingHealth,
+    val updatedAtMs: Long?
+)
 
 // Машинное, волатильное состояние: привязано к конкретной загрузке и
 // батарее, поэтому не переносится через backup. Отдельный файл
 // session_runtime.xml; сводка, история и кривая остаются в SessionCache.
-class SessionRuntimeStore(private val prefs: SharedPreferences) {
+class SessionRuntimeStore(
+    private val prefs: SharedPreferences,
+    private val clock: () -> Long = { SystemClock.elapsedRealtime() }
+) {
 
     fun saveBootIdentity(identity: BootIdentity) {
         prefs.edit()
@@ -129,6 +144,40 @@ class SessionRuntimeStore(private val prefs: SharedPreferences) {
             .apply()
     }
 
+    // Последний статус слежения переживает смерть процесса: после неё
+    // экран и виджет показывают причину остановки, а не нейтральное «нет
+    // данных» (design D4). Запись редкая — только на смене статуса.
+    fun saveTrackingHealth(health: TrackingHealth) {
+        prefs.edit()
+            .putString(KEY_TRACKING_STATUS, health.status.name)
+            .putString(KEY_TRACKING_FAILURE, health.failure?.name)
+            .putLong(KEY_TRACKING_UPDATED_AT_MS, clock())
+            .apply()
+    }
+
+    fun loadTrackingHealth(): StoredTrackingHealth? {
+        val rawStatus = prefs.getString(KEY_TRACKING_STATUS, null) ?: return null
+        val status = runCatching { TrackingStatus.valueOf(rawStatus) }.getOrNull()
+            ?: return null
+        val failure = prefs.getString(KEY_TRACKING_FAILURE, null)
+            ?.let { raw -> runCatching { TrackingFailure.valueOf(raw) }.getOrNull() }
+        // После перезапуска процесса сервис не подтверждён: восстановленный
+        // RUNNING/STARTING означал бы ложную живость. Терминальные статусы
+        // (запрет ОС, нет разрешения) возвращаем как есть — ради причины.
+        val restored = if (status == TrackingStatus.RUNNING ||
+            status == TrackingStatus.STARTING
+        ) {
+            TrackingHealth(status = TrackingStatus.STOPPED)
+        } else {
+            TrackingHealth(status = status, failure = failure)
+        }
+        return StoredTrackingHealth(
+            health = restored,
+            updatedAtMs = prefs.getLong(KEY_TRACKING_UPDATED_AT_MS, -1L)
+                .takeIf { it >= 0L }
+        )
+    }
+
     // Кольцо интервалов: плоская строка "atMs:durationMs:uah;...",
     // без зависимостей. Лимит корзин держит оценщик при обрезке окна.
     private fun encodeSamples(samples: List<DischargeSample>): String =
@@ -177,6 +226,10 @@ class SessionRuntimeStore(private val prefs: SharedPreferences) {
         private const val KEY_ACTIVE_PEAK_CURRENT_UA = "active_session_peak_current_ua"
         private const val KEY_ACTIVE_LAST_LEVEL_PCT = "active_session_last_level_pct"
         private const val KEY_ACTIVE_LAST_UPDATED_AT_MS = "active_session_last_updated_at_ms"
+
+        private const val KEY_TRACKING_STATUS = "tracking_status"
+        private const val KEY_TRACKING_FAILURE = "tracking_failure"
+        private const val KEY_TRACKING_UPDATED_AT_MS = "tracking_updated_at_ms"
 
         private const val UNKNOWN_BOOT_COUNT = -1
 
