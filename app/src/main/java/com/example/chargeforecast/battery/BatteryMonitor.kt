@@ -162,6 +162,18 @@ class BatteryMonitor(
         val currentUa: Long? = sanitizeCurrentUa(
             if (currentRaw == Int.MIN_VALUE) Long.MIN_VALUE else currentRaw.toLong()
         ) ?: SysfsCurrent.readCurrentNowUa()
+        // Достоверность тока: на зарядке значение ниже 50 мА — не
+        // измерение (см. BatterySnapshot.MIN_CREDIBLE_CURRENT_UA), и
+        // трекер датчиков через три замера покажет MISSING с пояснением
+        // о резервном источнике.
+        val status = intent.getIntExtra(
+            BatteryManager.EXTRA_STATUS, BatteryManager.BATTERY_STATUS_UNKNOWN
+        )
+        val chargingOrFull = status == BatteryManager.BATTERY_STATUS_CHARGING ||
+            status == BatteryManager.BATTERY_STATUS_FULL
+        val credibleCurrentUa = currentUa?.takeIf {
+            !chargingOrFull || it >= MIN_CREDIBLE_CURRENT_UA
+        }
         // Счётчик остатка для оценки ёмкости с первого замера.
         // Long.MIN_VALUE — ошибка драйвера, отсекается в toSnapshot.
         val counterUah: Long? = try {
@@ -170,13 +182,11 @@ class BatteryMonitor(
             Log.w(TAG, "charge counter read failed", e)
             null
         }?.takeIf { it > 0 }
-        recordSensorQuality(currentUa, counterUah)
+        recordSensorQuality(credibleCurrentUa, counterUah)
         val extras = BatteryExtras(
             level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, 0),
             scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, 100),
-            status = intent.getIntExtra(
-                BatteryManager.EXTRA_STATUS, BatteryManager.BATTERY_STATUS_UNKNOWN
-            ),
+            status = status,
             plugged = intent.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0),
             temperatureTenthsC = intent.getIntExtra(
                 BatteryManager.EXTRA_TEMPERATURE, Int.MIN_VALUE

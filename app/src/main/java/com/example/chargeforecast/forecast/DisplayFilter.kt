@@ -48,16 +48,21 @@ class DisplayFilter(
     private var reviewLatched = false
     private var reviewTicks = 0
 
-    // rawRemainingSec — сырая оценка остатка в секундах.
+    // raw — сырая оценка остатка в секундах.
     // Возвращает показанное значение в секундах.
-    fun update(rawRemainingSec: Float?, nowMs: Long): Long? {
+    // isFull — единственное состояние, в котором ноль остатка считается
+    // терминальным фактом. На неполном заряде нулевая оценка — сбой
+    // входа: она не залипает, а обрабатывается как отсутствие данных
+    // (спека charge-forecast, «Остаток не равен нулю при неполном заряде»).
+    fun update(rawSec: Float?, nowMs: Long, isFull: Boolean = false): Long? {
+        val raw = if (rawSec != null && rawSec <= 0f && !isFull) null else rawSec
         val dtMs = lastUpdateMs?.let { (nowMs - it).coerceAtLeast(0L) } ?: 0L
         // Метка времени двигается каждым тиком (иначе dtMs всегда 0 и
         // обе EMA не сглаживают — raw проходит в показ напрямую).
         lastUpdateMs = nowMs
         // Полная зарядка: ноль — мгновенно, EMA не должна «дотухать»
         // десятки секунд после isFull (остаток 0 — терминальный факт).
-        if (rawRemainingSec != null && rawRemainingSec <= 0f) {
+        if (raw != null && raw <= 0f) {
             emaSec = 0f
             slowEmaSec = 0f
             trendHistory.clear()
@@ -66,28 +71,28 @@ class DisplayFilter(
             setAnchor(0f, nowMs)
             return 0L
         }
-        emaSec = if (rawRemainingSec == null) {
+        emaSec = if (raw == null) {
             // Нет данных — держим EMA: показанный продолжает убывать.
             emaSec
         } else {
             val prev = emaSec
             when {
-                prev == null || dtMs <= 0L -> rawRemainingSec
+                prev == null || dtMs <= 0L -> raw
                 else -> {
                     val alpha = 1f - exp(-dtMs.toFloat() / emaTauMs)
-                    prev + alpha * (rawRemainingSec - prev)
+                    prev + alpha * (raw - prev)
                 }
             }
         }
-        slowEmaSec = if (rawRemainingSec == null) {
+        slowEmaSec = if (raw == null) {
             slowEmaSec
         } else {
             val prev = slowEmaSec
             when {
-                prev == null || dtMs <= 0L -> rawRemainingSec
+                prev == null || dtMs <= 0L -> raw
                 else -> {
                     val alpha = 1f - exp(-dtMs.toFloat() / SLOW_EMA_TAU_MS)
-                    prev + alpha * (rawRemainingSec - prev)
+                    prev + alpha * (raw - prev)
                 }
             }
         }
@@ -125,7 +130,7 @@ class DisplayFilter(
             setAnchor(seed, nowMs)
             return out(nowMs)
         }
-        if (rawRemainingSec == null) {
+        if (raw == null) {
             // Данных нет — якорь не трогаем, отсчёт продолжает убывать.
             // Пропуск данных обнуляет счётчик стабильности (неизвестное
             // не считается стабилизацией), максимум для просадок живёт дальше.
@@ -159,7 +164,7 @@ class DisplayFilter(
                     reviewLatched = false
                 }
                 if (shown - candidate > TREND_RESET_DROP_SEC) {
-                    resetTrendWindow(rawRemainingSec, nowMs)
+                    resetTrendWindow(raw, nowMs)
                 }
                 glide(candidate, shown, nowMs)
             }

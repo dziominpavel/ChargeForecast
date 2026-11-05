@@ -68,61 +68,116 @@ fun SessionScreen(
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         ElectricalLine(snapshot = snapshot)
-        SensorFallbackNote(state.dataQuality, whileCharging = true)
+        // В фазе STALLED нет прогноза зарядки, поэтому пояснение о
+        // fallback скорости к ней не относится: состояние объясняет
+        // карточка ниже (спека, «Кабель подключён, зарядка не идёт»).
+        val cardMode = SessionCardText.mode(state)
+        if (cardMode != SessionCardMode.STALLED) {
+            SensorFallbackNote(state.dataQuality, whileCharging = true)
+        }
 
-        Card(
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surfaceVariant
-            ),
-            shape = RoundedCornerShape(ChargeDimens.CardCorner)
-        ) {
-            Column(
-                modifier = Modifier.padding(ChargeDimens.CardPadding),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(ChargeDimens.GapSmall)
+        if (cardMode == SessionCardMode.STALLED) {
+            StalledCard(state)
+        } else {
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant
+                ),
+                shape = RoundedCornerShape(ChargeDimens.CardCorner)
             ) {
-                when {
-                    state.forecast.isFull -> Text(
-                        text = stringResource(R.string.session_charged),
-                        style = MaterialTheme.typography.headlineLarge,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    else -> {
-                        // Опора есть с первой секунды (история или приор
-                        // типа подключения) — без фаз «Измеряю…» и
-                        // «Собираю данные…». Если строки нет, она просто
-                        // не показывается, а не заменяется заглушкой.
-                        val context = LocalContext.current
-                        val speed = state.forecast.speedPctPerMin
-                        if (speed != null) {
-                            Text(
-                                text = stringResource(
-                                    R.string.session_speed,
-                                    String.format(java.util.Locale.US, "%.1f", speed)
-                                ),
-                                style = MaterialTheme.typography.titleLarge,
-                                color = MaterialTheme.colorScheme.onBackground
-                            )
-                        }
-                        state.forecast.remainingSec?.let { remainingSec ->
-                            Text(
-                                text = stringResource(
-                                    R.string.session_remaining,
-                                    ForecastText.formatRemaining(context, remainingSec)
-                                ),
-                                style = MaterialTheme.typography.headlineLarge,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                        }
-                        accuracyText(state.forecast.accuracy)?.let { accuracy ->
-                            Text(
-                                text = accuracy,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                Column(
+                    modifier = Modifier.padding(ChargeDimens.CardPadding),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(ChargeDimens.GapSmall)
+                ) {
+                    when (cardMode) {
+                        SessionCardMode.CHARGED -> Text(
+                            text = stringResource(R.string.session_charged),
+                            style = MaterialTheme.typography.headlineLarge,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        else -> {
+                            // Опора есть с первой секунды (история или приор
+                            // типа подключения) — без фаз «Измеряю…» и
+                            // «Собираю данные…». Если строки нет, она просто
+                            // не показывается, а не заменяется заглушкой.
+                            val context = LocalContext.current
+                            val speed = state.forecast.speedPctPerMin
+                            if (speed != null) {
+                                Text(
+                                    text = stringResource(
+                                        R.string.session_speed,
+                                        String.format(java.util.Locale.US, "%.1f", speed)
+                                    ),
+                                    style = MaterialTheme.typography.titleLarge,
+                                    color = MaterialTheme.colorScheme.onBackground
+                                )
+                            }
+                            state.forecast.remainingSec?.let { remainingSec ->
+                                Text(
+                                    text = stringResource(
+                                        R.string.session_remaining,
+                                        ForecastText.formatRemaining(context, remainingSec)
+                                    ),
+                                    style = MaterialTheme.typography.headlineLarge,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                            accuracyText(state.forecast.accuracy)?.let { accuracy ->
+                                Text(
+                                    text = accuracy,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+// Кабель подключён, но телефон не заряжается: прогноза до 100% нет.
+// Вместо отсчёта — нейтральное объяснение и оценка оставшейся работы
+// (та же, что на экране разряда). Слова «ошибка» здесь нет: пауза
+// зарядки — штатное состояние умной зарядки (design D6).
+@Composable
+private fun StalledCard(state: SessionState) {
+    val context = LocalContext.current
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant
+        ),
+        shape = RoundedCornerShape(ChargeDimens.CardCorner)
+    ) {
+        Column(
+            modifier = Modifier.padding(ChargeDimens.CardPadding),
+            horizontalAlignment = Alignment.Start,
+            verticalArrangement = Arrangement.spacedBy(ChargeDimens.GapSmall)
+        ) {
+            Text(
+                text = stringResource(R.string.session_stalled_title),
+                style = MaterialTheme.typography.headlineLarge,
+                color = MaterialTheme.colorScheme.onBackground
+            )
+            Text(
+                text = stringResource(R.string.session_stalled_desc),
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            // Оценка работы — только когда она посчитана: иначе строки
+            // нет, а не «нет данных».
+            state.discharge.remainingSec?.let { remainingSec ->
+                Text(
+                    text = stringResource(
+                        R.string.session_stalled_work,
+                        ForecastText.formatRemaining(context, remainingSec)
+                    ),
+                    modifier = Modifier.fillMaxWidth(),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
     }

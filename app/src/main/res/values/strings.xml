@@ -17,6 +17,12 @@
     <string name="session_type_usb">USB</string>
     <string name="session_type_wireless">Беспроводная</string>
     <string name="session_type_unknown">Зарядка</string>
+    <!-- Кабель подключён, зарядка не идёт: прогноза до 100% нет,
+         вместо него объяснение и оценка работы. Тексты нейтральные,
+         без слова «ошибка» (спека charge-forecast). -->
+    <string name="session_stalled_title">Кабель подключён, зарядка не идёт</string>
+    <string name="session_stalled_desc">Телефон работает от батареи: зарядка на паузе или адаптер не даёт нужный ток.</string>
+    <string name="session_stalled_work">Осталось работать ≈ %1$s</string>
     <string name="session_live_current_ma">%1$d мА</string>
     <string name="session_live_current_a">%1$s А</string>
     <string name="session_live_voltage">%1$s В</string>

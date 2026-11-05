@@ -46,10 +46,10 @@ class DiagTextTest {
         assertEquals(
             "t=1000;lvl=81;plug=1;chg=1;full=0;type=AC;ma=4;cnt=3268000;cap=4035200;" +
                 "s1=2.94;s1l=-;s2=-;s3=3.01;fus=3.01;base=5.47;k=0.55;raw=676;shown=671;" +
-                "acc=PRECISE;ref=0",
+                "eff=-;acc=PRECISE;ref=0;ph=CHARGING",
             line
         )
-        assertEquals(20, line.split(";").size)
+        assertEquals(22, line.split(";").size)
     }
 
     @Test

@@ -45,7 +45,11 @@ data class SessionState(
     // Возраст последнего замера батареи на момент эмиссии состояния. По
     // нему отличают «сервис умер при живых данных» от «данные замерли»
     // (design D1, D2).
-    val dataAgeMs: Long = 0L
+    val dataAgeMs: Long = 0L,
+    // Фаза зарядки (design D6 change forecast-integrity): в STALLED
+    // прогноз до 100% не показывается. Значима только на кабеле —
+    // в простое остаётся значением по умолчанию.
+    val chargePhase: ChargePhase = ChargePhase.CHARGING
 ) {
     val isPlugged: Boolean get() = snapshot?.isPlugged == true
 

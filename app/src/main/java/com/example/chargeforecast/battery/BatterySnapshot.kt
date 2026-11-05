@@ -53,6 +53,12 @@ data class BatteryExtras(
     val chargeCounterUah: Long?
 )
 
+// Порог достоверности тока: ниже 50 мА во время зарядки датчик отдаёт
+// шум драйвера (на Huawei — 4 мА), а не измерение. Такое значение не
+// показывается как факт и не идёт в спидометр по току (спека
+// charge-forecast, «Недостоверный ток не используется»).
+const val MIN_CREDIBLE_CURRENT_UA = 50_000L
+
 // Сырое значение BATTERY_PROPERTY_CURRENT_NOW в nullable микроамперы.
 // Драйверы отдают Long.MIN_VALUE при ошибке и 0 при отсутствии датчика.
 fun sanitizeCurrentUa(rawUa: Long): Long? = when (rawUa) {
@@ -85,7 +91,7 @@ fun BatteryExtras.toSnapshot(nowMs: Long): BatterySnapshot {
         // Ток при разрядке отрицательный — для скорости не используем,
         // показываем модуль только во время зарядки.
         currentMa = currentNowUa
-            ?.takeIf { it > 0 && (charging || full) }
+            ?.takeIf { it > 0 && (charging || full) && it >= MIN_CREDIBLE_CURRENT_UA }
             ?.let { it / 1000f },
         // Ток разряда — модуль отрицательного значения, только вне зарядки.
         // currentNowUa уже знаковый (sanitizeCurrentUa сохраняет минус).

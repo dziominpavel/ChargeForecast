@@ -88,6 +88,12 @@ internal class SessionEngine(
         private set
     // Предыдущий ярус точности — событие пишется только на смене.
     private var lastAccuracy: ForecastAccuracy? = null
+    // Фаза зарядки: замеры подряд без CHARGING и роста уровня, последний
+    // виденный уровень (рост снимает STALLED) и предыдущая фаза (сброс
+    // фильтра показа — только на входе в STALLED).
+    private var stalledTicks = 0
+    private var phaseLevelPct: Int? = null
+    private var lastPhase: ChargePhase = ChargePhase.CHARGING
 
     fun update(snapshot: BatterySnapshot?, nowMs: Long): SessionState {
         if (snapshot == null) return idle()
@@ -165,11 +171,13 @@ internal class SessionEngine(
             counterShort.addSample(nowMs, counterUah)
             counterLong.addSample(nowMs, counterUah)
         }
+        // Паспортная ёмкость — коридор доверия к оценке (может быть null).
+        val designCapacityUah = sysfsCapacityUah()
         val liveCapacity = capacityTracker.update(
-            snapshot.chargeCounterUah, snapshot.levelPct
+            snapshot.chargeCounterUah, snapshot.levelPct, designCapacityUah
         )
         // Изменение оценки ёмкости — событие: по нему видно, откуда
-        // взялся скачок остатка.
+        // взялся скачок остатка (было / стало / причина).
         capacityTracker.lastChange?.let { change ->
             onDiagEvent(
                 DiagEvent(
@@ -182,7 +190,7 @@ internal class SessionEngine(
             lastCapacityUah = liveCapacity
             runtimeStore?.saveCapacity(liveCapacity)
         }
-        val capacityUah = liveCapacity ?: sysfsCapacityUah() ?: runtimeStore?.loadCapacity()
+        val capacityUah = liveCapacity ?: designCapacityUah ?: storedCapacity(snapshot)
 
         val currentUa = snapshot.currentMa?.let { (it * 1000f).toLong() }
         if (currentUa != null && currentUa > 0) {
@@ -221,6 +229,7 @@ internal class SessionEngine(
         curveLearner.add(snapshot.levelPct, measuredRate, linearBaseRatePctPerMin)
         // Энергия до полного (мкА·ч) = ёмкость − счётчик (счётчик —
         // заряд В батарее): непрерывный остаток, обход квантования 1%.
+        // Отрицательное значение — повод для резерва по уровню, а не ноль.
         val remainingEnergyUah = capacityUah?.let { cap ->
             snapshot.chargeCounterUah?.let { counter -> cap - counter }
         }
@@ -245,6 +254,40 @@ internal class SessionEngine(
         val blendedSpeed = blendedBaseRate?.let {
             it * TaperCurve.factor(snapshot.levelPct, taperFactors)
         }
+        // Фаза: «кабель подключён, зарядка не идёт». Прогноз до 100%
+        // в ней не выдаётся — экран показывает объяснение и оценку
+        // работы (спека, «Кабель подключён, зарядка не идёт»).
+        val phase = updateChargePhase(snapshot)
+        if (phase == ChargePhase.STALLED) {
+            if (lastPhase != ChargePhase.STALLED) displayFilter.reset()
+            lastPhase = phase
+            val hidden = ChargeForecast(
+                speedPctPerMin = null,
+                remainingSec = null,
+                accuracy = ForecastAccuracy.COLLECTING,
+                isFull = false
+            )
+            publishDiagTick(
+                snapshot = snapshot,
+                nowMs = nowMs,
+                estimates = estimates,
+                fused = fused,
+                baseRatePctPerMin = blendedBaseRate,
+                capacityUah = capacityUah,
+                raw = hidden,
+                shownRemainingSec = null,
+                shownSpeedPctPerMin = null,
+                phase = phase
+            )
+            return SessionState(
+                snapshot = snapshot,
+                forecast = hidden,
+                sessionAgeMs = age,
+                discharge = dischargeEstimate(snapshot, nowMs),
+                chargePhase = phase
+            )
+        }
+        lastPhase = phase
         val raw = ChargeForecaster.forecast(
             levelPct = snapshot.levelPct,
             speedPctPerMin = blendedSpeed,
@@ -261,9 +304,16 @@ internal class SessionEngine(
             baseRatePctPerMin = blendedBaseRate
         )
         // Фильтр показа: EMA тренда + округление до секунд — каждый тик
-        // новое значение, экстраполированное до 100%.
-        val displayed = displayFilter.update(raw.remainingSec?.toFloat(), nowMs)
-        val forecast = raw.copy(remainingSec = displayed)
+        // новое значение, экстраполированное до 100%. Терминальный ноль
+        // допустим только на полном заряде.
+        val displayed = displayFilter.update(raw.remainingSec?.toFloat(), nowMs, snapshot.isFull)
+        // Показываемая скорость — из показанного же остатка: уравнение
+        // «остаток = скорость × время» обязано держаться на экране.
+        val shownSpeed = effectiveSpeed(raw.remainingPct, displayed)
+        val forecast = raw.copy(
+            remainingSec = displayed,
+            speedPctPerMin = shownSpeed
+        )
         publishDiagTick(
             snapshot = snapshot,
             nowMs = nowMs,
@@ -272,14 +322,52 @@ internal class SessionEngine(
             baseRatePctPerMin = blendedBaseRate,
             capacityUah = capacityUah,
             raw = raw,
-            shownRemainingSec = displayed
+            shownRemainingSec = displayed,
+            shownSpeedPctPerMin = shownSpeed,
+            phase = phase
         )
         return SessionState(
             snapshot = snapshot,
             forecast = forecast,
             sessionAgeMs = age,
-            discharge = DischargeEstimate.NONE
+            discharge = DischargeEstimate.NONE,
+            chargePhase = phase
         )
+    }
+
+    // Фаза зарядки: идёт / полная / «кабель есть, зарядки нет». STALLED —
+    // 60 замеров подряд без CHARGING, FULL и роста уровня (design D6):
+    // пауза умной зарядки на 80% не должна давать мигание состояния,
+    // а возврат CHARGING или рост уровня снимают STALLED сразу.
+    private fun updateChargePhase(snapshot: BatterySnapshot): ChargePhase {
+        val previousLevel = phaseLevelPct
+        phaseLevelPct = snapshot.levelPct
+        val grew = previousLevel != null && snapshot.levelPct > previousLevel
+        val notCharging = !snapshot.isCharging && !snapshot.isFull
+        stalledTicks = if (notCharging && !grew) stalledTicks + 1 else 0
+        return when {
+            snapshot.isFull || snapshot.levelPct >= 100 -> ChargePhase.FULL
+            stalledTicks >= STALL_TICKS -> ChargePhase.STALLED
+            else -> ChargePhase.CHARGING
+        }
+    }
+
+    // Показываемая скорость — эффективная: остаток в процентах, делённый
+    // на показанное время. Считается по уже отфильтрованному остатку,
+    // поэтому уравнение «остаток = время × скорость» держится каждый тик.
+    private fun effectiveSpeed(remainingPct: Float?, shownSec: Long?): Float? {
+        if (remainingPct == null || shownSec == null || shownSec <= 0L) return null
+        return remainingPct / (shownSec / 60f)
+    }
+
+    // Сохранённая ёмкость проходит эшелон 2 при чтении: значение, не
+    // проходящее инвариант, игнорируется и пересчитывается из текущего
+    // замера (design, Migration Plan).
+    private fun storedCapacity(snapshot: BatterySnapshot): Long? {
+        val stored = runtimeStore?.loadCapacity() ?: return null
+        if (stored !in CapacityTracker.MIN_SANE_UAH..CapacityTracker.MAX_SANE_UAH) return null
+        val counter = snapshot.chargeCounterUah ?: return stored
+        return if (stored.toDouble() >= counter * CapacityTracker.COUNTER_MARGIN) stored else null
     }
 
     // Снимок тика: собирается здесь, пишется приложением. Ярус точности
@@ -292,7 +380,9 @@ internal class SessionEngine(
         baseRatePctPerMin: Float?,
         capacityUah: Long?,
         raw: ChargeForecast,
-        shownRemainingSec: Long?
+        shownRemainingSec: Long?,
+        shownSpeedPctPerMin: Float?,
+        phase: ChargePhase
     ) {
         val accuracy = raw.accuracy
         val previous = lastAccuracy
@@ -324,8 +414,10 @@ internal class SessionEngine(
             taperFactor = TaperCurve.factor(snapshot.levelPct, taperFactors),
             rawRemainingSec = raw.remainingSec,
             shownRemainingSec = shownRemainingSec,
+            shownSpeedPctPerMin = shownSpeedPctPerMin,
             accuracy = accuracy.name,
-            refining = fused.refining
+            refining = fused.refining,
+            phase = phase.name
         )
     }
 
@@ -424,6 +516,9 @@ internal class SessionEngine(
         curveLearner.reset()
         lastTick = null
         lastAccuracy = null
+        stalledTicks = 0
+        phaseLevelPct = null
+        lastPhase = ChargePhase.CHARGING
         return true
     }
 
@@ -466,6 +561,9 @@ internal class SessionEngine(
         curveLearner.reset()
         lastTick = null
         lastAccuracy = null
+        stalledTicks = 0
+        phaseLevelPct = null
+        lastPhase = ChargePhase.CHARGING
     }
 
     // Сводка завершённой сессии: средняя CC-фаза (без рампы и доводки).
@@ -507,5 +605,8 @@ internal class SessionEngine(
         // CC-фазы не ниже порога и набрано не меньше 2%.
         const val SUMMARY_MIN_AVG_PCT_PER_MIN = 0.1f
         const val SUMMARY_MIN_GAINED_PCT = 2
+        // 60 замеров (тик 1 Гц) без CHARGING и роста уровня — зарядка
+        // не идёт; на паузе умной зарядки состояние не мигает.
+        const val STALL_TICKS = 60
     }
 }

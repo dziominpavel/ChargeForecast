@@ -19,7 +19,24 @@ class DisplayFilterTest {
         val filter = DisplayFilter()
         assertEquals(2967L, filter.update(2967.4f, 0L))
         // Полная зарядка — ноль мгновенно, без дотухания.
-        assertEquals(0L, DisplayFilter().update(0f, 0L))
+        assertEquals(0L, DisplayFilter().update(0f, 0L, isFull = true))
+    }
+
+    @Test
+    fun zeroWithoutFull_doesNotStick() {
+        // Терминальный ноль допустим только на полном заряде: при
+        // неполном нулевая сырая оценка — сбой входа, а не факт.
+        // Она не залипает: показ продолжает отсчёт, а возврат живой
+        // модели снова даёт нормальное значение.
+        val filter = DisplayFilter()
+        assertEquals(600L, filter.update(600.0f, 0L))
+        // Сбой входа: raw = 0 без isFull — показ продолжает тикать.
+        val broken = filter.update(0f, 1_000L)!!
+        assertTrue("показ не должен стать нулём: $broken", broken > 0L)
+        val recovered = filter.update(600.0f, 2_000L)!!
+        assertTrue("показ восстановился: $recovered", recovered > 0L)
+        // Без якоря нулевая оценка не создаёт нулевую точку отсчёта.
+        assertEquals(null, DisplayFilter().update(0f, 0L))
     }
 
     @Test

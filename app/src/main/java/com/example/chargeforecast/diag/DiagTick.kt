@@ -28,6 +28,11 @@ data class DiagTick(
     // Сырой остаток до фильтра показа и то, что показано.
     val rawRemainingSec: Long?,
     val shownRemainingSec: Long?,
+    // Показываемая (эффективная) скорость: остаток ÷ показанное время.
+    // По ней сверяют «скорость и остаток согласованы» на устройстве.
+    val shownSpeedPctPerMin: Float? = null,
     val accuracy: String,
-    val refining: Boolean
+    val refining: Boolean,
+    // Фаза зарядки: CHARGING, FULL или STALLED (кабель есть, зарядки нет).
+    val phase: String = "CHARGING"
 )

@@ -121,6 +121,16 @@ class BatterySnapshotTest {
     }
 
     @Test
+    fun current_belowCredibilityThreshold_ignored() {
+        // На зарядке ток ниже 50 мА — шум драйвера (на Huawei 4 мА),
+        // а не измерение: в снимок такое значение не попадает.
+        assertNull(extras(currentNowUa = 4_000L).toSnapshot(0L).currentMa)
+        assertNull(extras(currentNowUa = 49_999L).toSnapshot(0L).currentMa)
+        assertEquals(50f, extras(currentNowUa = 50_000L).toSnapshot(0L).currentMa!!, 1e-3f)
+        assertEquals(1800f, extras(currentNowUa = 1_800_000L).toSnapshot(0L).currentMa!!, 1e-3f)
+    }
+
+    @Test
     fun dischargeCurrent_populatedOnlyWhileDischarging() {
         // Разряд: датчик отдаёт отрицательный ток — модуль попадает в
         // отдельное поле, currentMa остаётся пустым (как и раньше).

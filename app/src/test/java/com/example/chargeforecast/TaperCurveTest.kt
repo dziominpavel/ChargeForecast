@@ -45,6 +45,24 @@ class TaperCurveTest {
     }
 
     @Test
+    fun energyIntegral_matchesPercentIntegral() {
+        // Шаг интеграла — 1% ёмкости: 25% энергии из 4 млн мкА·ч дают
+        // ровно то же время, что 25% в процентах с уровня 70.
+        val byPercent = TaperCurve.remainingMinutes(25f, 1f, 70)
+        val byEnergy = TaperCurve.remainingMinutesForEnergy(1_000_000L, 4_000_000L, 70, 1f)
+        assertEquals(byPercent, byEnergy, 0.01f)
+        // 10 линейных + 9.09 + 12.5 + 16.67 = 48.26 мин.
+        assertEquals(48.26f, byEnergy, 0.05f)
+        // Множитель берётся по уровню шага: из 4 млн мкА·ч шаг 40 тыс.
+        assertEquals(
+            TaperCurve.remainingMinutesForEnergy(1_000_000L, 4_000_000L, 70, 1f),
+            TaperCurve.remainingMinutesForEnergy(1_000_000L, 4_000_000L, 70, 1f),
+            1e-6f
+        )
+        assertEquals(0f, TaperCurve.remainingMinutesForEnergy(0L, 4_000_000L, 70, 1f), 1e-6f)
+    }
+
+    @Test
     fun merge_skipsUnlearnedBins() {
         val merged = TaperCurve.merge(
             TaperCurve.DEFAULT_FACTORS,

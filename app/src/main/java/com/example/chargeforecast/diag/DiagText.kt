@@ -26,8 +26,10 @@ object DiagText {
         append(";k=").append(String.format(Locale.US, "%.2f", tick.taperFactor))
         append(";raw=").append(tick.rawRemainingSec ?: MISSING)
         append(";shown=").append(tick.shownRemainingSec ?: MISSING)
+        append(";eff=").append(speed(tick.shownSpeedPctPerMin))
         append(";acc=").append(tick.accuracy)
         append(";ref=").append(bit(tick.refining))
+        append(";ph=").append(tick.phase)
     }
 
     fun event(atMs: Long, event: DiagEvent): String =

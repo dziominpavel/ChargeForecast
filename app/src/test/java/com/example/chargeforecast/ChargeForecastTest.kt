@@ -1,4 +1,4 @@
-﻿package com.example.chargeforecast
+package com.example.chargeforecast
 
 import com.example.chargeforecast.battery.BatterySnapshot
 import com.example.chargeforecast.battery.ChargeType
@@ -124,7 +124,9 @@ class ChargeForecastTest {
         )
         assertEquals(ForecastAccuracy.APPROXIMATE, f.accuracy)
         assertEquals(2797L, f.remainingSec)
-        assertEquals(2f, f.speedPctPerMin!!, 1e-6f)
+        // Показываемая скорость — эффективная: 50% остатка ÷ 2797 с.
+        assertEquals(50f / (2797f / 60f), f.speedPctPerMin!!, 1e-4f)
+        assertEquals(50f, f.remainingPct!!, 1e-4f)
     }
 
     @Test
@@ -293,6 +295,99 @@ class ChargeForecastTest {
             sessionActive = true
         )
         assertEquals(75000L, f.remainingSec)
+    }
+
+    // ---------- Энергия, эффективная скорость, гейт точности ----------
+
+    @Test
+    fun forecast_energyContract_effectiveSpeedMatchesTime() {
+        // Остаток в энергии: 1.0 млн мкА·ч из 4.0 млн — 25% ёмкости.
+        // Интеграл с уровня 70: 10 линейных + 20 по корзинам = 73.26 мин.
+        val f = ChargeForecaster.forecast(
+            levelPct = 70,
+            speedPctPerMin = 1f,
+            sessionAgeMs = 12 * min,
+            isFull = false,
+            sessionActive = true,
+            estimatesAgreed = true,
+            remainingEnergyUah = 1_000_000L,
+            capacityUah = 4_000_000L
+        )
+        assertEquals(25f, f.remainingPct!!, 0.01f)
+        // 25% энергии — 25 шагов от уровня 70 (70..94): 10 линейных
+        // плюс корзины 80-84, 85-89 и 90-94 = 48.26 мин = 2895 с.
+        assertEquals(2895L, f.remainingSec)
+        // Уравнение экрана: показанная скорость × время = остаток.
+        assertEquals(f.remainingPct!! / (f.remainingSec!! / 60f), f.speedPctPerMin!!, 1e-4f)
+    }
+
+    @Test
+    fun forecast_counterAboveCapacity_levelReserveAndApproximate() {
+        // Счётчик догнал ёмкость: вход противоречив — остаток считается
+        // резервом по уровню, ярус не выше «примерно», ноль недостижим.
+        val f = ChargeForecaster.forecast(
+            levelPct = 81,
+            speedPctPerMin = 1f,
+            sessionAgeMs = 20 * min,
+            isFull = false,
+            sessionActive = true,
+            estimatesAgreed = true,
+            remainingEnergyUah = -100_000L,
+            capacityUah = 4_000_000L
+        )
+        assertEquals(ForecastAccuracy.APPROXIMATE, f.accuracy)
+        assertEquals(19f, f.remainingPct!!, 0.01f)
+        assertTrue("остаток не ноль: ${f.remainingSec}", f.remainingSec!! > 0L)
+    }
+
+    @Test
+    fun forecast_minimumRemainingIsHalfPercent_notZero() {
+        // Остаток энергии 0.1% поднимается до 0.5% ёмкости: «0 с» нельзя.
+        val f = ChargeForecaster.forecast(
+            levelPct = 99,
+            speedPctPerMin = 1f,
+            sessionAgeMs = 12 * min,
+            isFull = false,
+            sessionActive = true,
+            remainingEnergyUah = 4_000L,
+            capacityUah = 4_000_000L
+        )
+        assertEquals(0.5f, f.remainingPct!!, 0.01f)
+        assertTrue("остаток не ноль: ${f.remainingSec}", f.remainingSec!! > 0L)
+    }
+
+    @Test
+    fun forecast_zeroWithoutFull_replacedByLevelReserve() {
+        // Запрет нуля: даже при крайних данных ноль на неполном заряде
+        // заменяется резервом по уровню с ярусом «примерно».
+        val f = ChargeForecaster.forecast(
+            levelPct = 90,
+            speedPctPerMin = 10_000f,
+            sessionAgeMs = 12 * min,
+            isFull = false,
+            sessionActive = true,
+            remainingEnergyUah = 1L,
+            capacityUah = 4_000_000L
+        )
+        assertTrue("остаток не ноль: ${f.remainingSec}", f.remainingSec!! > 0L)
+        assertEquals(ForecastAccuracy.APPROXIMATE, f.accuracy)
+    }
+
+    @Test
+    fun forecast_preciseForbiddenOnContradiction() {
+        // Формальные условия «точно» выполнены (20 минут, спидометры
+        // согласны), но счётчик больше ёмкости — ярус понижается.
+        val f = ChargeForecaster.forecast(
+            levelPct = 50,
+            speedPctPerMin = 1f,
+            sessionAgeMs = 20 * min,
+            isFull = false,
+            sessionActive = true,
+            estimatesAgreed = true,
+            remainingEnergyUah = -1L,
+            capacityUah = 4_000_000L
+        )
+        assertEquals(ForecastAccuracy.APPROXIMATE, f.accuracy)
     }
 
     @Test

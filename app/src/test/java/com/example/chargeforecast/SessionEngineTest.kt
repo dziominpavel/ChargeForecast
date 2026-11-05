@@ -7,6 +7,7 @@ import com.example.chargeforecast.diag.DiagEventKind
 import com.example.chargeforecast.forecast.DischargeEstimate
 import com.example.chargeforecast.forecast.DischargeEstimator
 import com.example.chargeforecast.forecast.ForecastAccuracy
+import com.example.chargeforecast.session.ChargePhase
 import com.example.chargeforecast.session.SessionCache
 import com.example.chargeforecast.session.SessionEngine
 import com.example.chargeforecast.session.SessionRuntimeStore
@@ -124,12 +125,9 @@ class SessionEngineTest {
             st = engine.update(snap(t, 50, counterUah = null), t)
             t += 1_000L
         }
-        assertEquals(
-            "ожидали ~1.0 по току",
-            1.0f,
-            st!!.forecast.speedPctPerMin!!,
-            0.05f
-        )
+        // Показываемая скорость — эффективная (остаток ÷ время), а не
+        // мгновенные 1 %/мин: доводка впереди растягивает интеграл.
+        assertEffectiveSpeedMatches(st!!)
         // Интеграл с уровня 50: 30 линейных + хвост корзин = 93.3 мин
         // = 5595 с.
         assertTrue(
@@ -151,12 +149,8 @@ class SessionEngineTest {
             st = engine.update(snap(t, level, currentMa = null), t)
             t += 1_000L
         }
-        assertEquals(
-            "ожидали ~1.0 по счётчику",
-            1.0f,
-            st!!.forecast.speedPctPerMin!!,
-            0.05f
-        )
+        // Эффективная скорость согласована с остатком и временем.
+        assertEffectiveSpeedMatches(st!!)
         // Сырой интеграл с уровня 53 (~5415 с), но показанное отстаёт:
         // переход приор→live идёт скольжением якоря вниз, плюс отсчёт
         // тикает — к 200-й секунде детерминировано ~5247 с (скорость
@@ -384,8 +378,12 @@ class SessionEngineTest {
             "ожидали ~5124 (якорь из приора), получили ${last!!.forecast.remainingSec}",
             last.forecast.remainingSec!! in 5050L..5200L
         )
-        // Итоговая скорость — приор 0.83 %/мин, а не мусор нулевого дельта.
-        assertEquals(0.833f, last.forecast.speedPctPerMin!!, 0.01f)
+        // Итоговая скорость — эффективная от приора 0.83 %/мин, а не
+        // мусор нулевого дельта; уравнение экрана держится.
+        // Эффективная скорость от приора 0.83 %/мин при показанном
+        // остатке ~5124 с: 30% ÷ 85.4 мин ≈ 0.35 %/мин.
+        assertEquals(0.35f, last.forecast.speedPctPerMin!!, 0.02f)
+        assertEffectiveSpeedMatches(last)
     }
 
     @Test
@@ -822,14 +820,19 @@ class SessionEngineTest {
         val engine = SessionEngine(onDiagEvent = { events += it })
 
         engine.update(snap(0L, 40, counterUah = 1_600_000L), 0L)
-        engine.update(snap(10_000L, 42, counterUah = 1_690_000L), 10_000L)
+        // Уровень без шага 2% — уточнения нет, события тоже нет.
+        engine.update(snap(5_000L, 41, counterUah = 1_640_000L), 5_000L)
+        assertEquals(1, events.count { it.kind == DiagEventKind.CAPACITY })
+        engine.update(snap(10_000L, 42, counterUah = 1_684_000L), 10_000L)
 
         val capacityEvents = events.filter { it.kind == DiagEventKind.CAPACITY }
         assertEquals(2, capacityEvents.size)
         assertTrue(capacityEvents.first().fields.contains("why=init"))
+        assertTrue(capacityEvents.first().fields.contains("was=-"))
         val refined = capacityEvents.last().fields
         assertTrue(refined, refined.contains("was=4000000"))
-        assertTrue(refined, refined.contains("now=4500000"))
+        // Δсчётчик 84k на Δуровень 2 → 4.2 млн (+5%, в пределах шага).
+        assertTrue(refined, refined.contains("now=4200000"))
         assertTrue(refined, refined.contains("why=refined"))
     }
 
@@ -851,5 +854,48 @@ class SessionEngineTest {
         val accuracyEvents = events.filter { it.kind == DiagEventKind.ACCURACY }
         assertEquals(1, accuracyEvents.size)
         assertTrue(accuracyEvents.single().fields.contains("to=PRECISE"))
+    }
+
+    @Test
+    fun stalledPhase_afterSixtyQuietTicks_andRecoversOnCharging() {
+        // Кабель подключён, статус не CHARGING, уровень стоит: через
+        // 60 замеров — STALLED без прогноза; возврат CHARGING снимает
+        // состояние и возвращает цифры (design D6).
+        val engine = SessionEngine()
+        var t = 0L
+        var last: SessionState? = null
+        while (t <= 120_000L) {
+            last = engine.update(
+                snap(t, 70, currentMa = null, counterUah = 2_800_000L, charging = false),
+                t
+            )
+            t += 1_000L
+        }
+        assertEquals(ChargePhase.STALLED, last!!.chargePhase)
+        assertNull("прогноз зарядки скрыт", last.forecast.remainingSec)
+        val resumed = engine.update(
+            snap(121_000L, 70, counterUah = 2_827_333L, charging = true),
+            121_000L
+        )
+        assertEquals(ChargePhase.CHARGING, resumed.chargePhase)
+        assertNotNull("прогноз вернулся", resumed.forecast.remainingSec)
+    }
+
+    // Уравнение экрана (design D4): показанные остаток и скорость дают
+    // показанное время; допуск — округление времени до секунды.
+    private fun assertEffectiveSpeedMatches(state: SessionState) {
+        val forecast = state.forecast
+        val pct = forecast.remainingPct
+        val sec = forecast.remainingSec
+        val speed = forecast.speedPctPerMin
+        assertNotNull("остаток в процентах не заполнен", pct)
+        assertNotNull("время не заполнено", sec)
+        assertNotNull("скорость не заполнена", speed)
+        assertEquals(
+            "скорость \u00d7 время должны давать остаток",
+            pct!! / (sec!! / 60f),
+            speed!!,
+            0.05f
+        )
     }
 }
