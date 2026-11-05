@@ -1,7 +1,5 @@
 package com.example.chargeforecast.battery
 
-import java.io.File
-
 // Best-effort чтение проектной ёмкости из sysfs для первой сессии,
 // когда счётчик ещё недоступен. Срабатывает не везде (SELinux режет) —
 // любая неудача молча даёт null, это не ошибка. Чистые проверки отдельно.
@@ -21,13 +19,11 @@ object SysfsCapacity {
 
     fun readDesignCapacityUah(): Long? {
         for (path in PATHS) {
-            try {
-                val raw = File(path).readText().trim().toLongOrNull()
-                val sane = sanitizeCapacityUah(raw)
-                if (sane != null) return sane
-            } catch (_: Exception) {
-                // Нет файла или нет доступа — пробуем следующий путь.
-            }
+            // Отказ политики запоминается: второй попытки в этом процессе нет.
+            val text = SysfsProbe.readText(path) ?: continue
+            val raw = text.trim().toLongOrNull()
+            val sane = sanitizeCapacityUah(raw) ?: continue
+            return sane
         }
         return null
     }

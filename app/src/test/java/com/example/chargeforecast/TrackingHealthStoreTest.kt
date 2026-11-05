@@ -1,10 +1,13 @@
 package com.example.chargeforecast
 
+import com.example.chargeforecast.diag.DiagEvent
+import com.example.chargeforecast.diag.DiagEventKind
 import com.example.chargeforecast.tracking.TrackingFailure
 import com.example.chargeforecast.tracking.TrackingHealthStore
 import com.example.chargeforecast.tracking.TrackingStatus
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class TrackingHealthStoreTest {
@@ -67,5 +70,25 @@ class TrackingHealthStoreTest {
 
         assertEquals(TrackingStatus.RUNNING, store.health.value.status)
         assertNull(store.health.value.failure)
+    }
+
+    @Test
+    fun statusChangesAreJournaledOnce() {
+        // Каждая смена статуса — строка события с причиной; повтор
+        // того же статуса молчит (onStartCommand зовёт markRunning часто).
+        val events = mutableListOf<DiagEvent>()
+        val store = TrackingHealthStore(onEvent = { events += it })
+
+        store.markStarting()
+        store.markRunning()
+        store.markRunning()
+        store.markBlocked(TrackingFailure.START_BLOCKED)
+
+        assertEquals(3, events.size)
+        assertTrue(events.all { it.kind == DiagEventKind.TRACKING })
+        assertTrue(events[0].fields.contains("to=STARTING"))
+        assertTrue(events[1].fields.contains("from=STARTING"))
+        assertTrue(events[1].fields.contains("to=RUNNING"))
+        assertTrue(events[2].fields.contains("why=START_BLOCKED"))
     }
 }

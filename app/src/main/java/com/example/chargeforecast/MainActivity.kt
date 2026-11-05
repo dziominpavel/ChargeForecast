@@ -3,6 +3,7 @@ package com.example.chargeforecast
 import android.content.Intent
 import android.os.Bundle
 import android.provider.Settings
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -29,10 +30,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.FileProvider
 import androidx.core.net.toUri
 import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.chargeforecast.BuildConfig
+import com.example.chargeforecast.diag.DiagExport
 import com.example.chargeforecast.service.ChargeForecastService
 import com.example.chargeforecast.settings.SettingsCache
 import com.example.chargeforecast.ui.SessionScreen
@@ -157,6 +160,38 @@ private fun SettingsRoute(
         // приходят параметром — по образцу opacityPct.
         versionName = BuildConfig.VERSION_NAME,
         buildDate = BuildConfig.BUILD_DATE,
+        onShareDiagnostics = { shareDiagnostics(context) },
         modifier = modifier
     )
 }
+
+// Выгрузка журнала диагностики: файл уходит через FileProvider, получателя
+// выбирает пользователь. Пустой журнал объясняется текстом, а не падением
+// и не пустым chooser'ом. Платформенный Intent собирается здесь, а тип,
+// подпись и проверка «есть что отдавать» — в DiagExport (тестируются на JVM).
+private fun shareDiagnostics(context: android.content.Context) {
+    val app = context.applicationContext as? ChargeForecastApplication ?: return
+    val file = app.diagLog.file()
+    if (!DiagExport.isShareable(file)) {
+        Toast.makeText(context, R.string.settings_diagnostics_empty, Toast.LENGTH_SHORT).show()
+        return
+    }
+    val uri = runCatching {
+        FileProvider.getUriForFile(context, context.packageName + DIAG_AUTHORITY_SUFFIX, file)
+    }.getOrNull()
+    val request = DiagExport.buildRequest(uri?.toString())
+    if (uri == null || request == null) {
+        Toast.makeText(context, R.string.settings_diagnostics_empty, Toast.LENGTH_SHORT).show()
+        return
+    }
+    val send = Intent(Intent.ACTION_SEND).apply {
+        type = request.type
+        putExtra(Intent.EXTRA_STREAM, uri)
+        putExtra(Intent.EXTRA_SUBJECT, request.subject)
+        if (request.grantReadPermission) addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    context.startActivity(Intent.createChooser(send, request.subject))
+}
+
+// Authority FileProvider: applicationId + суффикс (см. AndroidManifest).
+private const val DIAG_AUTHORITY_SUFFIX = ".diag"

@@ -17,6 +17,9 @@ import com.example.chargeforecast.forecast.InstantSpeedEstimator
 import com.example.chargeforecast.forecast.SpeedFusion
 import com.example.chargeforecast.forecast.TaperCurve
 import com.example.chargeforecast.forecast.TaperCurveLearner
+import com.example.chargeforecast.diag.DiagEvent
+import com.example.chargeforecast.diag.DiagEventKind
+import com.example.chargeforecast.diag.DiagTick
 import java.util.UUID
 
 // Чистый движок сессии (см. design фазы 1): все расчёты от переданной
@@ -32,6 +35,9 @@ internal class SessionEngine(
     private val runtimeStore: SessionRuntimeStore? = null,
     // Номер загрузки, в которой работает движок; null — BOOT_COUNT недоступен.
     private val bootCount: Int? = null,
+    // События журнала: ёмкость и ярус точности. Пустой по умолчанию —
+    // движок остаётся чистым для JVM-тестов и ничего не знает о файлах.
+    private val onDiagEvent: (DiagEvent) -> Unit = {},
     private val sysfsCapacityUah: () -> Long? = { null }
 ) {
     private val calculator = ChargeSpeedCalculator()
@@ -75,6 +81,13 @@ internal class SessionEngine(
     // измерение с лагом против ступенчатого фактора даёт выброс —
     // EMA гасит его (см. design D5).
     private var baseRateEmaPctPerMin: Float? = null
+    // Последний тик для журнала диагностики: снимок собирается здесь,
+    // пишет его приложение.
+    @Volatile
+    var lastTick: DiagTick? = null
+        private set
+    // Предыдущий ярус точности — событие пишется только на смене.
+    private var lastAccuracy: ForecastAccuracy? = null
 
     fun update(snapshot: BatterySnapshot?, nowMs: Long): SessionState {
         if (snapshot == null) return idle()
@@ -155,6 +168,16 @@ internal class SessionEngine(
         val liveCapacity = capacityTracker.update(
             snapshot.chargeCounterUah, snapshot.levelPct
         )
+        // Изменение оценки ёмкости — событие: по нему видно, откуда
+        // взялся скачок остатка.
+        capacityTracker.lastChange?.let { change ->
+            onDiagEvent(
+                DiagEvent(
+                    DiagEventKind.CAPACITY,
+                    "was=" + (change.was ?: "-") + ";now=" + change.now + ";why=" + change.reason
+                )
+            )
+        }
         if (liveCapacity != null && liveCapacity != lastCapacityUah) {
             lastCapacityUah = liveCapacity
             runtimeStore?.saveCapacity(liveCapacity)
@@ -241,11 +264,68 @@ internal class SessionEngine(
         // новое значение, экстраполированное до 100%.
         val displayed = displayFilter.update(raw.remainingSec?.toFloat(), nowMs)
         val forecast = raw.copy(remainingSec = displayed)
+        publishDiagTick(
+            snapshot = snapshot,
+            nowMs = nowMs,
+            estimates = estimates,
+            fused = fused,
+            baseRatePctPerMin = blendedBaseRate,
+            capacityUah = capacityUah,
+            raw = raw,
+            shownRemainingSec = displayed
+        )
         return SessionState(
             snapshot = snapshot,
             forecast = forecast,
             sessionAgeMs = age,
             discharge = DischargeEstimate.NONE
+        )
+    }
+
+    // Снимок тика: собирается здесь, пишется приложением. Ярус точности
+    // помечается событием на смене, а не каждым тиком.
+    private fun publishDiagTick(
+        snapshot: BatterySnapshot,
+        nowMs: Long,
+        estimates: SpeedFusion.Estimates,
+        fused: SpeedFusion.Fused,
+        baseRatePctPerMin: Float?,
+        capacityUah: Long?,
+        raw: ChargeForecast,
+        shownRemainingSec: Long?
+    ) {
+        val accuracy = raw.accuracy
+        val previous = lastAccuracy
+        if (previous != null && previous != accuracy) {
+            onDiagEvent(
+                DiagEvent(
+                    DiagEventKind.ACCURACY,
+                    "from=" + previous.name + ";to=" + accuracy.name
+                )
+            )
+        }
+        lastAccuracy = accuracy
+        lastTick = DiagTick(
+            atMs = nowMs,
+            levelPct = snapshot.levelPct,
+            plugged = snapshot.isPlugged,
+            charging = snapshot.isCharging,
+            full = snapshot.isFull,
+            chargeType = snapshot.chargeType.name,
+            currentMa = snapshot.currentMa,
+            counterUah = snapshot.chargeCounterUah,
+            capacityUah = capacityUah,
+            s1ShortPctPerMin = estimates.counterShortPctPerMin,
+            s1LongPctPerMin = estimates.counterLongPctPerMin,
+            s2PctPerMin = estimates.currentPctPerMin,
+            s3PctPerMin = estimates.levelPctPerMin,
+            fusedPctPerMin = fused.speedPctPerMin,
+            baseRatePctPerMin = baseRatePctPerMin,
+            taperFactor = TaperCurve.factor(snapshot.levelPct, taperFactors),
+            rawRemainingSec = raw.remainingSec,
+            shownRemainingSec = shownRemainingSec,
+            accuracy = accuracy.name,
+            refining = fused.refining
         )
     }
 
@@ -342,6 +422,8 @@ internal class SessionEngine(
         capacityTracker.reset()
         displayFilter.reset()
         curveLearner.reset()
+        lastTick = null
+        lastAccuracy = null
         return true
     }
 
@@ -382,6 +464,8 @@ internal class SessionEngine(
         ccAccumulator.reset()
         displayFilter.reset()
         curveLearner.reset()
+        lastTick = null
+        lastAccuracy = null
     }
 
     // Сводка завершённой сессии: средняя CC-фаза (без рампы и доводки).

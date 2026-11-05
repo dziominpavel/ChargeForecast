@@ -4,6 +4,8 @@ import android.os.SystemClock
 import com.example.chargeforecast.battery.BatteryDataQuality
 import com.example.chargeforecast.battery.BatterySnapshot
 import com.example.chargeforecast.battery.SysfsCapacity
+import com.example.chargeforecast.diag.DiagEvent
+import com.example.chargeforecast.diag.DiagTick
 import com.example.chargeforecast.forecast.ChargeForecast
 import com.example.chargeforecast.forecast.DischargeEstimate
 import com.example.chargeforecast.forecast.DischargeEstimator
@@ -62,7 +64,9 @@ class ChargeSessionMonitor(
     bootCount: Int? = null,
     initialSnapshot: ActiveSessionSnapshot? = null,
     trackingHealth: StateFlow<TrackingHealth>? = null,
-    dataQuality: StateFlow<BatteryDataQuality>? = null
+    dataQuality: StateFlow<BatteryDataQuality>? = null,
+    // События журнала диагностики: ёмкость и ярус точности из движка.
+    onDiagEvent: (DiagEvent) -> Unit = {}
 ) {
     // Ошибки — события, а не состояние: буферизованный канал отдаёт
     // сообщение, пришедшее до подписки UI, и не переигрывает его второму
@@ -78,7 +82,7 @@ class ChargeSessionMonitor(
 
     private val sysfsCapacityUah: Long? by lazy { SysfsCapacity.readDesignCapacityUah() }
     private val engine =
-        SessionEngine(cache, dischargeEstimator, runtimeStore, bootCount) {
+        SessionEngine(cache, dischargeEstimator, runtimeStore, bootCount, onDiagEvent) {
             sysfsCapacityUah
         }
     private val activeSessionPersister = ActiveSessionPersister(runtimeStore)
@@ -102,6 +106,10 @@ class ChargeSessionMonitor(
     fun reportError(message: String?) {
         if (message != null) _errors.trySend(message)
     }
+
+    // Последний тик движка — источник строки журнала. Отдельного потока
+    // нет: приложение забирает снимок в своём коллекторе состояния.
+    val lastTick: DiagTick? get() = engine.lastTick
 
     // Тикер: переизлучаем состояние и без broadcast — для «Измеряю…»
     // и обновления цифр каждую секунду. В простое тика нет вовсе

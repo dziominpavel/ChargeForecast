@@ -60,4 +60,19 @@ class BatterySensorTrackerTest {
         assertEquals(SensorAvailability.AVAILABLE, tracker.dataQuality.currentSensor)
         assertEquals(SensorAvailability.MISSING, tracker.dataQuality.counterSensor)
     }
+
+    @Test
+    fun availabilityChangesAreReportedOnce() {
+        // Событие только на смене состояния: одинаковые чтения подряд
+        // не должны наполнять журнал.
+        val changes = mutableListOf<BatteryDataQuality>()
+        val tracker = BatterySensorTracker(onChange = { changes += it })
+
+        repeat(3) { tracker.onReading(currentUa = 1_500_000L, counterUah = 2_000_000L) }
+        assertEquals(1, changes.size)
+
+        repeat(3) { tracker.onReading(currentUa = null, counterUah = null) }
+        assertEquals(2, changes.size)
+        assertEquals(SensorAvailability.MISSING, changes.last().currentSensor)
+    }
 }

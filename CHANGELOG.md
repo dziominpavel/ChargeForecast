@@ -5,6 +5,16 @@
 
 ## [Unreleased]
 
+**Добавлено**
+- В настройках появилось действие «Поделиться диагностикой»: журнал тиков и событий можно отправить с телефона.
+
+### Добавлено
+- Change: `runtime-diagnostics`.
+- `diag/`: `DiagTick`, `DiagEvent`, `DiagRing`, `DiagText`, `DiagLog` — тик конвейера (1 Гц на зарядке) и события (ёмкость, точность, слежение, датчики, сервис) в `files/diag/session.log` с ротацией 2 × 1 МБ.
+- Выгрузка через `FileProvider` и share-интент; пустой журнал объясняется текстом.
+- `SysfsProbe`: отказ чтения узла запоминается на процесс — повторных `avc: denied` и лишних чтений в hot-path нет.
+- Тесты: `DiagRingTest`, `DiagTextTest`, `DiagLogTest`, `DiagExportTest`, `SysfsProbeTest`; расширены `SessionEngineTest`, `TrackingHealthStoreTest`, `BatterySensorTrackerTest` (267/267 JVM-тестов).
+
 ## [0.6.0] — 2026-10-31 (MINOR)
 
 **Добавлено**

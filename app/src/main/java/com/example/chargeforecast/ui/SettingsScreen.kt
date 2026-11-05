@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -32,6 +33,9 @@ fun SettingsScreen(
     onOpacityChange: (Int) -> Unit,
     versionName: String,
     buildDate: String,
+    // Выгрузка журнала диагностики: на релизной сборке это единственный
+    // способ достать файл с устройства.
+    onShareDiagnostics: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     // Ступеньки ползунка: шаг 10% ⇒ 9 внутренних ступеней (спека app-settings).
@@ -78,6 +82,17 @@ fun SettingsScreen(
 
         Text(
             text = stringResource(R.string.settings_widget_opacity_hint),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        // Диагностика: журнал уезжает share-интентом, кнопка есть всегда —
+        // пустое состояние объясняет текстом, а не скрытием действия.
+        TextButton(onClick = onShareDiagnostics) {
+            Text(stringResource(R.string.settings_diagnostics_share))
+        }
+        Text(
+            text = stringResource(R.string.settings_diagnostics_hint),
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )

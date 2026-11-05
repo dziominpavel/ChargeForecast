@@ -18,6 +18,8 @@ import androidx.core.content.ContextCompat
 import com.example.chargeforecast.ChargeForecastApplication
 import com.example.chargeforecast.MainActivity
 import com.example.chargeforecast.R
+import com.example.chargeforecast.diag.DiagEvent
+import com.example.chargeforecast.diag.DiagEventKind
 import com.example.chargeforecast.tracking.TrackingFailure
 import com.example.chargeforecast.tracking.TrackingStatus
 
@@ -65,12 +67,18 @@ class ChargeForecastService : Service() {
             // отдельное состояние с действием «Настройки».
             Log.w(TAG, "startForeground denied", e)
             app.trackingHealthStore.markNoPermission()
+            app.diagLog.record(
+                DiagEvent(DiagEventKind.SERVICE, "what=foreground;why=no_permission")
+            )
             stopSelf()
         } catch (e: Exception) {
             // Запрет foreground/типа сервиса не должен ронять процесс:
             // фиксируем причину и отдаём её экрану и виджету.
             Log.w(TAG, "startForeground failed", e)
             app.trackingHealthStore.markBlocked(TrackingFailure.FOREGROUND_BLOCKED)
+            app.diagLog.record(
+                DiagEvent(DiagEventKind.SERVICE, "what=foreground;why=blocked")
+            )
             stopSelf()
         }
     }
@@ -222,11 +230,17 @@ class ChargeForecastService : Service() {
             } catch (e: SecurityException) {
                 Log.w(TAG, "startForegroundService denied", e)
                 store.markNoPermission()
+                app.diagLog.record(
+                    DiagEvent(DiagEventKind.SERVICE, "what=start;why=no_permission")
+                )
             } catch (e: Exception) {
                 // Спека background-tracking: ошибка не всплывает падением,
                 // а становится видимым статусом для экрана и виджета.
                 Log.w(TAG, "startForegroundService failed", e)
                 store.markBlocked(TrackingFailure.classify(e))
+                app.diagLog.record(
+                    DiagEvent(DiagEventKind.SERVICE, "what=start;why=blocked")
+                )
             }
         }
     }

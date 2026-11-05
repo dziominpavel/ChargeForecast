@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FileProvider отдаёт только каталог диагностики: остальное внутреннее
+     хранилище наружу не открывается. -->
+<paths>
+    <files-path name="diag" path="diag/" />
+</paths>

@@ -2,6 +2,8 @@ package com.example.chargeforecast
 
 import com.example.chargeforecast.battery.BatterySnapshot
 import com.example.chargeforecast.battery.ChargeType
+import com.example.chargeforecast.diag.DiagEvent
+import com.example.chargeforecast.diag.DiagEventKind
 import com.example.chargeforecast.forecast.DischargeEstimate
 import com.example.chargeforecast.forecast.DischargeEstimator
 import com.example.chargeforecast.forecast.ForecastAccuracy
@@ -782,5 +784,72 @@ class SessionEngineTest {
         val fresh = second.update(snap(10_000L, 60), 10_000L)
         assertEquals("новая сессия начинается от текущего момента", 0L, fresh.sessionAgeMs)
         assertTrue(second.snapshotActiveSession()!!.id != snapshot.id)
+    }
+
+    @Test
+    fun diagTick_matchesShownRemaining() {
+        // Снимок тика собирается тем же вызовом, что и состояние: журнал
+        // не должен расходиться с экраном.
+        val engine = SessionEngine()
+        var state: SessionState? = null
+        var t = 0L
+        while (t <= 30_000L) {
+            state = engine.update(snap(t, 50), t)
+            t += 1_000L
+        }
+
+        val tick = engine.lastTick
+        assertNotNull("тик не собран", tick)
+        assertEquals(state!!.forecast.remainingSec, tick!!.shownRemainingSec)
+        assertEquals(50, tick.levelPct)
+        assertTrue(tick.plugged)
+    }
+
+    @Test
+    fun diagTick_absentWithoutBatteryData() {
+        val engine = SessionEngine()
+
+        engine.update(null, 0L)
+
+        assertNull(engine.lastTick)
+    }
+
+    @Test
+    fun capacityEvent_reportsWasNowAndReason() {
+        // Первый замер даёт оценку ёмкости, второй — уточнение по уровню.
+        // Событие должно нести оба значения и причину.
+        val events = mutableListOf<DiagEvent>()
+        val engine = SessionEngine(onDiagEvent = { events += it })
+
+        engine.update(snap(0L, 40, counterUah = 1_600_000L), 0L)
+        engine.update(snap(10_000L, 42, counterUah = 1_690_000L), 10_000L)
+
+        val capacityEvents = events.filter { it.kind == DiagEventKind.CAPACITY }
+        assertEquals(2, capacityEvents.size)
+        assertTrue(capacityEvents.first().fields.contains("why=init"))
+        val refined = capacityEvents.last().fields
+        assertTrue(refined, refined.contains("was=4000000"))
+        assertTrue(refined, refined.contains("now=4500000"))
+        assertTrue(refined, refined.contains("why=refined"))
+    }
+
+    @Test
+    fun accuracyEvent_writtenOnceOnTransition() {
+        // Ровный набор 1%/мин: спидометры согласны, через 10 минут —
+        // «Точно». Событие пишется на смене, а не на каждом тике.
+        val events = mutableListOf<DiagEvent>()
+        val engine = SessionEngine(onDiagEvent = { events += it })
+
+        var t = 0L
+        while (t <= 11 * 60_000L) {
+            val level = (40 + t / 60_000L).toInt().coerceAtMost(60)
+            val counter = 1_600_000L + t * 40_000L / 60_000L
+            engine.update(snap(t, level, currentMa = 2_667f, counterUah = counter), t)
+            t += 1_000L
+        }
+
+        val accuracyEvents = events.filter { it.kind == DiagEventKind.ACCURACY }
+        assertEquals(1, accuracyEvents.size)
+        assertTrue(accuracyEvents.single().fields.contains("to=PRECISE"))
     }
 }

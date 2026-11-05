@@ -4,7 +4,12 @@ package com.example.chargeforecast.battery
 // должен превращаться в «датчика нет». MISSING ставится только после
 // threshold пустых чтений подряд; первое валидное значение сразу
 // возвращает AVAILABLE.
-class BatterySensorTracker(private val threshold: Int = DEFAULT_THRESHOLD) {
+class BatterySensorTracker(
+    private val threshold: Int = DEFAULT_THRESHOLD,
+    // Смена доступности датчиков: UNKNOWN → AVAILABLE → MISSING и обратно.
+    // Одинаковые подряд не повторяются — журнал не должен шуметь.
+    private val onChange: (BatteryDataQuality) -> Unit = {}
+) {
 
     private var currentStreak = 0
     private var counterStreak = 0
@@ -18,10 +23,12 @@ class BatterySensorTracker(private val threshold: Int = DEFAULT_THRESHOLD) {
         currentStreak = current.streak
         val counter = advance(quality.counterSensor, counterUah != null, counterStreak)
         counterStreak = counter.streak
+        val previous = quality
         quality = BatteryDataQuality(
             currentSensor = current.availability,
             counterSensor = counter.availability
         )
+        if (quality != previous) onChange(quality)
         return quality
     }
 

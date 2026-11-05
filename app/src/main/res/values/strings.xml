@@ -67,6 +67,11 @@
          релизного файла и дата сборки (спека app-settings) -->
     <string name="settings_version_info">%1$s %2$s · сборка %3$s</string>
 
+    <!-- Диагностика: журнал тиков и событий, выгрузка из релизной сборки -->
+    <string name="settings_diagnostics_share">Поделиться диагностикой</string>
+    <string name="settings_diagnostics_hint">Журнал тиков и событий — чтобы разобрать неверные цифры прогноза.</string>
+    <string name="settings_diagnostics_empty">Журнал диагностики пока пуст</string>
+
     <!-- Виджет: оценка работы телефона — всегда приблизительная -->
     <string name="widget_charging_title">До 100%</string>
     <string name="widget_discharge_title">Осталось работать</string>

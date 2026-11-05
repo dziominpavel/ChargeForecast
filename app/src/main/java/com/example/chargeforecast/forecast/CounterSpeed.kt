@@ -77,19 +77,30 @@ class CounterSpeedometer(
 // затем рефайн по Δсчётчик/Δуровень при наборе ≥2%. Чистый класс.
 class CapacityTracker {
 
+    // Последнее изменение оценки — для журнала событий: было / стало /
+    // причина. Сбрасывается на каждом update: null — оценки не менялись.
+    data class Change(val was: Long?, val now: Long, val reason: String)
+
     private var anchorCounterUah: Long? = null
     private var anchorLevel: Int? = null
     private var estimateUah: Long? = null
 
+    @Volatile
+    var lastChange: Change? = null
+        private set
+
     fun update(counterUah: Long?, levelPct: Int): Long? {
+        lastChange = null
         if (counterUah == null || counterUah <= 0) return estimateUah
         if (levelPct <= 0 || levelPct > 100) return estimateUah
         val anchorCounter = anchorCounterUah
         val anchorLevel = anchorLevel
         if (estimateUah == null || anchorCounter == null || anchorLevel == null) {
+            val was = estimateUah
             estimateUah = InstantSpeedEstimator.estimateCapacityUah(counterUah, levelPct)
             anchorCounterUah = counterUah
             this.anchorLevel = levelPct
+            estimateUah?.let { lastChange = Change(was, it, "init") }
             return estimateUah
         }
         val deltaLevel = levelPct - anchorLevel
@@ -105,9 +116,11 @@ class CapacityTracker {
                 refined * 100L >= current * REFINEMENT_MIN_RATIO &&
                 refined * 100L <= current * REFINEMENT_MAX_RATIO
             if (refined in MIN_SANE_UAH..MAX_SANE_UAH && inCorridor) {
+                val was = estimateUah
                 estimateUah = refined
                 anchorCounterUah = counterUah
                 this.anchorLevel = levelPct
+                lastChange = Change(was, refined, "refined")
             }
         }
         return estimateUah

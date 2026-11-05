@@ -12,9 +12,11 @@
     <cloud-backup>
         <exclude domain="sharedpref" path="session_runtime.xml" />
         <exclude domain="file" path="discharge-journal.txt" />
+        <exclude domain="file" path="diag/" />
     </cloud-backup>
     <device-transfer>
         <exclude domain="sharedpref" path="session_runtime.xml" />
         <exclude domain="file" path="discharge-journal.txt" />
+        <exclude domain="file" path="diag/" />
     </device-transfer>
 </data-extraction-rules>

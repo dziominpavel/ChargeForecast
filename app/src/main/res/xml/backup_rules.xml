@@ -10,4 +10,5 @@
 <full-backup-content>
     <exclude domain="sharedpref" path="session_runtime.xml" />
     <exclude domain="file" path="discharge-journal.txt" />
+    <exclude domain="file" path="diag/" />
 </full-backup-content>

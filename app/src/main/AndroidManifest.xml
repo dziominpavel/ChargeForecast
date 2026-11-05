@@ -56,6 +56,18 @@
             </intent-filter>
         </receiver>
 
+        <!-- Диагностика: файл журнала отдаётся по content:// и только
+             после явного действия пользователя (share intent). -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.diag"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/diag_paths" />
+        </provider>
+
         <!-- Виджет домашнего экрана: вторая поверхность состояния сессии.
              Основное обновление — push от состояния (BatteryWidgetUpdater),
              системный интервал в info-файле — страховка от замерзания. -->

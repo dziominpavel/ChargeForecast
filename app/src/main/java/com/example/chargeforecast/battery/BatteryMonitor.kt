@@ -8,6 +8,8 @@ import android.os.BatteryManager
 import android.os.SystemClock
 import android.util.Log
 import androidx.core.content.ContextCompat
+import com.example.chargeforecast.diag.DiagEvent
+import com.example.chargeforecast.diag.DiagEventKind
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -27,13 +29,26 @@ import kotlinx.coroutines.launch
 class BatteryMonitor(
     private val appContext: Context,
     private val scope: CoroutineScope,
-    private val clock: () -> Long = SystemClock::elapsedRealtime
+    private val clock: () -> Long = SystemClock::elapsedRealtime,
+    // События доступности датчиков уходят в журнал диагностики.
+    private val onDiagEvent: (DiagEvent) -> Unit = {}
 ) {
     private val _snapshots = MutableStateFlow<BatterySnapshot?>(null)
     val snapshots: StateFlow<BatterySnapshot?> = _snapshots.asStateFlow()
 
     // Доступность датчиков: экран объясняет, какой fallback используется.
-    private val sensorTracker = BatterySensorTracker()
+    // Смена доступности — событие журнала: без него «4 мА» неотличимы от
+    // «датчика нет».
+    private val sensorTracker = BatterySensorTracker(
+        onChange = { quality ->
+            onDiagEvent(
+                DiagEvent(
+                    DiagEventKind.SENSOR,
+                    "cur=" + quality.currentSensor.name + ";cnt=" + quality.counterSensor.name
+                )
+            )
+        }
+    )
     private val _dataQuality = MutableStateFlow(BatteryDataQuality.UNKNOWN)
     val dataQuality: StateFlow<BatteryDataQuality> = _dataQuality.asStateFlow()
 

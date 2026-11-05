@@ -1,7 +1,5 @@
 package com.example.chargeforecast.battery
 
-import java.io.File
-
 // Best-effort чтение тока из sysfs: часть драйверов (в т.ч. HiSilicon
 // на Huawei) не отдаёт BATTERY_PROPERTY_CURRENT_NOW через BatteryManager,
 // но пишет файл. Срабатывает не везде (SELinux режет) — любая неудача
@@ -40,12 +38,11 @@ object SysfsCurrent {
 
     fun readCurrentNowUa(): Long? {
         for (path in PATHS) {
-            try {
-                val parsed = parseCurrentUa(File(path).readText())
-                if (parsed != null) return parsed
-            } catch (_: Exception) {
-                // Нет файла или нет доступа — пробуем следующий путь.
-            }
+            // Запрещённый путь запоминается в SysfsProbe: повторно не
+            // читаем и не шумим avc: denied каждый тик.
+            val text = SysfsProbe.readText(path) ?: continue
+            val parsed = parseCurrentUa(text) ?: continue
+            return parsed
         }
         return null
     }

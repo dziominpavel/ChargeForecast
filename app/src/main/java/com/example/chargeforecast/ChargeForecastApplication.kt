@@ -1,7 +1,9 @@
 package com.example.chargeforecast
 
 import android.app.Application
+import android.os.SystemClock
 import com.example.chargeforecast.battery.BatteryMonitor
+import com.example.chargeforecast.diag.DiagLog
 import com.example.chargeforecast.forecast.DischargeEstimator
 import com.example.chargeforecast.forecast.DischargeJournal
 import com.example.chargeforecast.session.BootIdentity
@@ -38,6 +40,11 @@ class ChargeForecastApplication : Application() {
     lateinit var trackingHealthStore: TrackingHealthStore
         private set
 
+    // Журнал диагностики: тик конвейера и редкие события. Пишется
+    // асинхронно, выгружается из настроек.
+    lateinit var diagLog: DiagLog
+        private set
+
     // Машинное состояние: boot identity, окно разряда, ёмкость и live-снимок
     // активной сессии. Отдельный prefs-файл, исключённый из backup.
     lateinit var sessionRuntimeStore: SessionRuntimeStore
@@ -60,7 +67,14 @@ class ChargeForecastApplication : Application() {
         val bootIdentity = BootIdentity.current(this)
         sessionCache = SessionCache.create(this)
         sessionRuntimeStore = SessionRuntimeStore.create(this)
-        trackingHealthStore = TrackingHealthStore()
+        // Часы — те же, что у расчётов (elapsedRealtime): иначе метки
+        // событий и тиков из разных шкал и не сопоставляются.
+        diagLog = DiagLog(
+            dir = File(filesDir, DiagLog.DIR_NAME),
+            scope = appScope,
+            clockMs = SystemClock::elapsedRealtime
+        )
+        trackingHealthStore = TrackingHealthStore(onEvent = diagLog::record)
         sessionRuntimeStore.saveBootIdentity(bootIdentity)
 
         dischargeJournal = DischargeJournal(File(filesDir, JOURNAL_FILE_NAME))
@@ -92,7 +106,7 @@ class ChargeForecastApplication : Application() {
             sessionCache.finalizeActiveSession(pendingSession, sessionRuntimeStore)
         }
 
-        batteryMonitor = BatteryMonitor(this, appScope)
+        batteryMonitor = BatteryMonitor(this, appScope, onDiagEvent = diagLog::record)
         sessionMonitor = ChargeSessionMonitor(
             batteryMonitor.snapshots,
             appScope,
@@ -102,7 +116,8 @@ class ChargeForecastApplication : Application() {
             bootCount = bootIdentity.bootCount,
             initialSnapshot = resumeSession,
             trackingHealth = trackingHealthStore.health,
-            dataQuality = batteryMonitor.dataQuality
+            dataQuality = batteryMonitor.dataQuality,
+            onDiagEvent = diagLog::record
         )
         batteryMonitor.start()
         // Виджет получает то же состояние, что экран и сервис — одним
@@ -112,6 +127,9 @@ class ChargeForecastApplication : Application() {
             sessionMonitor.state.collect {
                 // Журнал подписывает строки последней оценкой движка.
                 dischargeJournal.onEstimate(it.discharge.remainingSec)
+                // Строка тика: движок собирает снимок, троттлинг и запись —
+                // здесь, чтобы расчёт не знал про файлы.
+                sessionMonitor.lastTick?.let(diagLog::recordTick)
                 widgetUpdater.onState(it)
             }
         }
