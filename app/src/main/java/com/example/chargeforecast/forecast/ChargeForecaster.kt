@@ -62,7 +62,11 @@ object ChargeForecaster {
         taperFactors: FloatArray? = null,
         // Сглаженная базовая опора (линейная зона) от движка; если null —
         // выводится из измеренной скорости и фактора текущего уровня.
-        baseRatePctPerMin: Float? = null
+        baseRatePctPerMin: Float? = null,
+        // Режим счётчика: грубый — остаток по уровню, точный — по энергии.
+        // По умолчанию точный, чтобы чистый объект сохранял прежний
+        // энергетический контракт; движок всегда передаёт режим.
+        counterMode: CounterMode = CounterMode.FINE
     ): ChargeForecast {
         if (isFull || levelPct >= 100) {
             return ChargeForecast(
@@ -87,39 +91,47 @@ object ChargeForecaster {
             ?: speedPctPerMin / TaperCurve.factor(levelPct, curve)
         if (baseRate <= 0f) return collecting()
 
-        // Достоверность входа: счётчик обязан быть меньше ёмкости. Если
-        // он догнал или превысил её — остаток по энергии недостоверен,
-        // считается резерв по уровню заряда (спека «Достоверность входа»).
-        val capacity = capacityUah?.takeIf { it > 0L }
-        val counter = if (capacity != null && remainingEnergyUah != null) {
-            capacity - remainingEnergyUah
-        } else {
-            null
-        }
-        val energyReliable = capacity != null && remainingEnergyUah != null &&
-            counter != null && counter >= 0L && counter < capacity
-        var reserveUsed = capacity != null && remainingEnergyUah != null && !energyReliable
-
+        var reserveUsed = false
         var remainingPct: Float
         var minutes: Float
-        if (energyReliable) {
-            // Минимальный остаток 0.5% ёмкости: не ноль и не отрицательное.
-            val floorUah = (capacity!! * MIN_REMAINING_FRACTION).toLong().coerceAtLeast(1L)
-            val energyUah = remainingEnergyUah!!.coerceAtLeast(floorUah)
-            remainingPct = (energyUah * 100f / capacity).coerceIn(0f, 100f)
-            minutes = TaperCurve.remainingMinutesForEnergy(
-                remainingUah = energyUah,
-                capacityUah = capacity,
-                levelPct = levelPct,
-                baseRatePctPerMin = baseRate,
-                factors = curve
-            )
-        } else {
-            // Резерв по уровню заряда: счётчика нет или он противоречит
-            // ёмкости. Для обычного режима «счётчика нет» это штатный
-            // путь, а не резерв недостоверного входа.
+        if (counterMode == CounterMode.COARSE) {
+            // Грубый счётчик (шаг 1% ёмкости): остаток по уровню, ёмкость
+            // не в критическом пути — инверсия счётчика и ёмкости больше
+            // не может превратить остаток в ноль (design D3).
             remainingPct = (100 - levelPct).coerceIn(0, 100).toFloat()
             minutes = TaperCurve.remainingMinutes(remainingPct, baseRate, levelPct, curve)
+        } else {
+            // Точный счётчик: энергия до полного заряда. Счётчик обязан
+            // быть меньше ёмкости; иначе — резерв по уровню (спека
+            // «Достоверность входа»).
+            val capacity = capacityUah?.takeIf { it > 0L }
+            val counter = if (capacity != null && remainingEnergyUah != null) {
+                capacity - remainingEnergyUah
+            } else {
+                null
+            }
+            val energyReliable = capacity != null && remainingEnergyUah != null &&
+                counter != null && counter >= 0L && counter < capacity
+            reserveUsed = capacity != null && remainingEnergyUah != null && !energyReliable
+            if (energyReliable) {
+                // Минимальный остаток 0.5% ёмкости: не ноль и не отрицательное.
+                val floorUah = (capacity!! * MIN_REMAINING_FRACTION).toLong().coerceAtLeast(1L)
+                val energyUah = remainingEnergyUah!!.coerceAtLeast(floorUah)
+                remainingPct = (energyUah * 100f / capacity).coerceIn(0f, 100f)
+                minutes = TaperCurve.remainingMinutesForEnergy(
+                    remainingUah = energyUah,
+                    capacityUah = capacity,
+                    levelPct = levelPct,
+                    baseRatePctPerMin = baseRate,
+                    factors = curve
+                )
+            } else {
+                // Резерв по уровню заряда: счётчика нет или он противоречит
+                // ёмкости. Для обычного режима «счётчика нет» это штатный
+                // путь, а не резерв недостоверного входа.
+                remainingPct = (100 - levelPct).coerceIn(0, 100).toFloat()
+                minutes = TaperCurve.remainingMinutes(remainingPct, baseRate, levelPct, curve)
+            }
         }
 
         var seconds = (minutes * 60f).toLong()

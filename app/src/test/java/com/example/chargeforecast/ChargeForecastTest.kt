@@ -4,6 +4,7 @@ import com.example.chargeforecast.battery.BatterySnapshot
 import com.example.chargeforecast.battery.ChargeType
 import com.example.chargeforecast.forecast.ChargeForecaster
 import com.example.chargeforecast.forecast.ChargeSpeedCalculator
+import com.example.chargeforecast.forecast.CounterMode
 import com.example.chargeforecast.forecast.ForecastAccuracy
 import com.example.chargeforecast.session.SessionCache
 import com.example.chargeforecast.session.SessionEngine
@@ -531,4 +532,66 @@ class ChargeForecastTest {
             t += stepMs
         }
     }
+
+    // ---------- Грубый счётчик: остаток по уровню ----------
+
+    @Test
+    fun coarseCounter_remainingFromLevel_notFromEnergy() {
+        // Грубый счётчик: остаток 100−84 = 16% по уровню, даже если
+        // энергия (ёмкость − счётчик) дала бы инверсию и ноль.
+        val f = ChargeForecaster.forecast(
+            levelPct = 84,
+            speedPctPerMin = 1.5f,
+            sessionAgeMs = 12 * min,
+            isFull = false,
+            sessionActive = true,
+            remainingEnergyUah = -66_667L,
+            capacityUah = 2_731_333L,
+            counterMode = CounterMode.COARSE
+        )
+        assertEquals(16f, f.remainingPct!!, 1e-4f)
+        assertTrue("остаток должен быть минутами, а не нулём", f.remainingSec!! > 0L)
+    }
+
+    @Test
+    fun coarseCounter_zeroAtIncompleteCharge_impossible() {
+        // Инверсия счётчика и ёмкости не превращает остаток в ноль.
+        val f = ChargeForecaster.forecast(
+            levelPct = 81,
+            speedPctPerMin = 1f,
+            sessionAgeMs = 12 * min,
+            isFull = false,
+            sessionActive = true,
+            remainingEnergyUah = 0L,
+            capacityUah = 4_030_000L,
+            counterMode = CounterMode.COARSE
+        )
+        assertEquals(19f, f.remainingPct!!, 1e-4f)
+        assertTrue("остаток не ноль", f.remainingSec!! > 0L)
+    }
+
+    @Test
+    fun coarseCounter_preciseRequiresLongAgreement() {
+        val agreed = ChargeForecaster.forecast(
+            levelPct = 84,
+            speedPctPerMin = 1.5f,
+            sessionAgeMs = 12 * min,
+            isFull = false,
+            sessionActive = true,
+            estimatesAgreed = true,
+            counterMode = CounterMode.COARSE
+        )
+        assertEquals(ForecastAccuracy.PRECISE, agreed.accuracy)
+        val notAgreed = ChargeForecaster.forecast(
+            levelPct = 84,
+            speedPctPerMin = 1.5f,
+            sessionAgeMs = 12 * min,
+            isFull = false,
+            sessionActive = true,
+            estimatesAgreed = false,
+            counterMode = CounterMode.COARSE
+        )
+        assertEquals(ForecastAccuracy.APPROXIMATE, notAgreed.accuracy)
+    }
 }
+

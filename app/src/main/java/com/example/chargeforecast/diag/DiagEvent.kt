@@ -10,6 +10,8 @@ enum class DiagEventKind(val token: String) {
     TRACKING("track"),
     // Смена доступности датчика тока или счётчика.
     SENSOR("sensor"),
+    // Профиль квантования счётчика: подтверждение или смена режима.
+    COUNTER("counter"),
     // События сервиса: отказ foreground, остановка.
     SERVICE("svc")
 }

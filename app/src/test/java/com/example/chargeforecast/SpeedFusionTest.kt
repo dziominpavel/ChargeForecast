@@ -1,5 +1,6 @@
 package com.example.chargeforecast
 
+import com.example.chargeforecast.forecast.CounterMode
 import com.example.chargeforecast.forecast.SpeedFusion
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -149,4 +150,50 @@ class SpeedFusionTest {
         assertEquals(2.0f, fused.speedPctPerMin!!, 1e-4f)
         assertFalse(fused.refining)
     }
+
+    @Test
+    fun coarseMature_levelDominatesCounter() {
+        // Грубый счётчик: S3 ведёт (0.85), S1(2м) — кросс-чек (0.15).
+        val fused = SpeedFusion.fuse(
+            estimates(s1Long = 2.5f, s3 = 1.5f), 120_000L,
+            counterMode = CounterMode.COARSE
+        )
+        assertEquals(1.5f * 0.85f + 2.5f * 0.15f, fused.speedPctPerMin!!, 1e-4f)
+        assertFalse(fused.refining)
+    }
+
+    @Test
+    fun coarseMature_divergence_refinesToLevel() {
+        // Расхождение больше 40% — итог S3 (ground truth) с «уточняю».
+        val fused = SpeedFusion.fuse(
+            estimates(s1Long = 5.0f, s3 = 1.5f), 120_000L,
+            counterMode = CounterMode.COARSE
+        )
+        assertEquals(1.5f, fused.speedPctPerMin!!, 1e-6f)
+        assertTrue(fused.refining)
+    }
+
+    @Test
+    fun coarseShort_shortWindowDoesNotDominate() {
+        // 20-90 с в грубом режиме: S1(30с) не доминирует, ведёт S1(2м).
+        val fused = SpeedFusion.fuse(
+            estimates(s1Short = 58.0f, s1Long = 1.0f, s3 = 1.0f), 60_000L,
+            counterMode = CounterMode.COARSE
+        )
+        assertEquals(1.0f, fused.speedPctPerMin!!, 1e-4f)
+        assertFalse(fused.refining)
+    }
+
+    @Test
+    fun deadCurrent_notAdmittedEvenInTaper() {
+        // Ток 2 мА (S2=0.00) на 84%: без currentValid обход порога
+        // в доводке пропускал бы его, с currentValid=false — нет.
+        val fused = SpeedFusion.fuse(
+            estimates(s1Long = null, s2 = 0.0f, s3 = 1.5f), 120_000L,
+            levelPct = 84, counterMode = CounterMode.COARSE, currentValid = false
+        )
+        assertEquals(1.5f, fused.speedPctPerMin!!, 1e-6f)
+        assertFalse(fused.refining)
+    }
 }
+

@@ -2,11 +2,14 @@ package com.example.chargeforecast.session
 
 import com.example.chargeforecast.battery.BatterySnapshot
 import com.example.chargeforecast.battery.ChargeType
+import com.example.chargeforecast.battery.MIN_CREDIBLE_CURRENT_UA
 import com.example.chargeforecast.forecast.CapacityTracker
 import com.example.chargeforecast.forecast.ChargeForecaster
 import com.example.chargeforecast.forecast.ChargeForecast
 import com.example.chargeforecast.forecast.ChargePrior
 import com.example.chargeforecast.forecast.ChargeSpeedCalculator
+import com.example.chargeforecast.forecast.CounterMode
+import com.example.chargeforecast.forecast.CounterProfile
 import com.example.chargeforecast.forecast.CounterSpeedometer
 import com.example.chargeforecast.forecast.DischargeEstimate
 import com.example.chargeforecast.forecast.DischargeEstimator
@@ -49,6 +52,14 @@ internal class SessionEngine(
     private val ccAccumulator = CcPhaseAccumulator()
     private val displayFilter = DisplayFilter()
     private val curveLearner = TaperCurveLearner()
+    // Профиль квантования счётчика: грубый (1% ёмкости) или точный.
+    // Грубый — безопасный режим по умолчанию.
+    private val counterProfile = CounterProfile()
+    // Длинное окно счётчика (10 мин) — для гейта «точно» в грубом режиме.
+    private val counterMature = CounterSpeedometer(
+        windowMs = CounterSpeedometer.WINDOW_MATURE_MS
+    )
+    private var counterMode: CounterMode = CounterMode.COARSE
 
     private var plugDetectedAtMs: Long? = null
     private var sessionStartLevelPct: Int? = null
@@ -158,6 +169,11 @@ internal class SessionEngine(
             taperFactors = cache?.loadCurve(snapshot.chargeType)
                 ?: TaperCurve.DEFAULT_FACTORS
             linearBaseRatePctPerMin = null
+            // Режим счётчика — свойство устройства, а не сессии: читаем
+            // из runtime-хранилища, профиль подтверждаем заново.
+            counterMode = runtimeStore?.loadCounterMode() ?: CounterMode.COARSE
+            counterProfile.reset(counterMode)
+            counterMature.reset()
         }
         lastLevelPct = snapshot.levelPct
         lastUpdatedAtMs = nowMs
@@ -170,11 +186,19 @@ internal class SessionEngine(
         snapshot.chargeCounterUah?.let { counterUah ->
             counterShort.addSample(nowMs, counterUah)
             counterLong.addSample(nowMs, counterUah)
+            counterMature.addSample(nowMs, counterUah)
         }
         // Паспортная ёмкость — коридор доверия к оценке (может быть null).
         val designCapacityUah = sysfsCapacityUah()
+        // Сохранённая ёмкость проходит инвариант при чтении и служит
+        // стартом: сессия, начатая на высоком уровне, не стартует с
+        // заниженного «счётчик×100/уровень».
+        val storedCapacityUah = storedCapacity(snapshot)
         val liveCapacity = capacityTracker.update(
-            snapshot.chargeCounterUah, snapshot.levelPct, designCapacityUah
+            snapshot.chargeCounterUah,
+            snapshot.levelPct,
+            designCapacityUah,
+            storedCapacityUah
         )
         // Изменение оценки ёмкости — событие: по нему видно, откуда
         // взялся скачок остатка (было / стало / причина).
@@ -190,7 +214,30 @@ internal class SessionEngine(
             lastCapacityUah = liveCapacity
             runtimeStore?.saveCapacity(liveCapacity)
         }
-        val capacityUah = liveCapacity ?: designCapacityUah ?: storedCapacity(snapshot)
+        val capacityUah = liveCapacity ?: designCapacityUah ?: storedCapacityUah
+        // Профиль квантования: грубый счётчик — остаток по уровню, точный —
+        // по энергии. Подтверждение и смена режима — событие в журнал.
+        val observedMode = counterProfile.observe(
+            snapshot.chargeCounterUah, snapshot.levelPct, capacityUah, nowMs
+        )
+        counterProfile.lastChange?.let { change ->
+            if (change.was != change.now) {
+                runtimeStore?.saveCounterMode(change.now)
+            }
+            onDiagEvent(
+                DiagEvent(
+                    DiagEventKind.COUNTER,
+                    "mode=" + change.now.name +
+                        ";was=" + change.was.name +
+                        ";step=" + (counterProfile.stepUah ?: "-") +
+                        ";lag=" + (counterProfile.lagPct?.let {
+                            String.format(java.util.Locale.US, "%.2f", it)
+                        } ?: "-") +
+                        ";why=" + change.reason
+                )
+            )
+        }
+        counterMode = observedMode
 
         val currentUa = snapshot.currentMa?.let { (it * 1000f).toLong() }
         if (currentUa != null && currentUa > 0) {
@@ -207,9 +254,20 @@ internal class SessionEngine(
             currentPctPerMin = InstantSpeedEstimator.instantSpeedPctPerMin(
                 emaCurrentUa, capacityUah
             ),
-            levelPctPerMin = calculator.speedPctPerMin(nowMs)
+            levelPctPerMin = calculator.speedPctPerMin(nowMs),
+            counterMaturePctPerMin = counterMature.speedPctPerMin(nowMs, capacityUah)
         )
-        val fused = SpeedFusion.fuse(estimates, age, snapshot.levelPct)
+        // S2 допускается только при валидном токе: на MNA-LX9 датчик
+        // отдаёт 1-12 мА, и в доводке обход порога пропускал бы мёртвый 0.00.
+        val currentValid = (snapshot.currentMa ?: 0f) * 1000f >=
+            MIN_CREDIBLE_CURRENT_UA.toFloat()
+        val fused = SpeedFusion.fuse(
+            estimates,
+            age,
+            snapshot.levelPct,
+            counterMode,
+            currentValid
+        )
         // В сводку копим только CC-фазу (рампа/доводка отфильтрованы
         // накопителем) и только устойчивую скорость: сэмплы «уточняю»
         // (нестабильная оценка) приор портить не должны.
@@ -301,7 +359,8 @@ internal class SessionEngine(
             remainingEnergyUah = remainingEnergyUah,
             capacityUah = capacityUah,
             taperFactors = taperFactors,
-            baseRatePctPerMin = blendedBaseRate
+            baseRatePctPerMin = blendedBaseRate,
+            counterMode = counterMode
         )
         // Фильтр показа: EMA тренда + округление до секунд — каждый тик
         // новое значение, экстраполированное до 100%. Терминальный ноль
@@ -405,6 +464,9 @@ internal class SessionEngine(
             currentMa = snapshot.currentMa,
             counterUah = snapshot.chargeCounterUah,
             capacityUah = capacityUah,
+            counterStepUah = counterProfile.stepUah,
+            counterLagPct = counterProfile.lagPct,
+            counterMode = counterMode.name,
             s1ShortPctPerMin = estimates.counterShortPctPerMin,
             s1LongPctPerMin = estimates.counterLongPctPerMin,
             s2PctPerMin = estimates.currentPctPerMin,
@@ -424,12 +486,18 @@ internal class SessionEngine(
     // «Точно» — когда два самых надёжных доступных спидометра сошлись
     // в ±20% (приор: S1(2м)↔S2, S1(30с)↔S2, затем пары с S3).
     private fun estimatesAgreed(estimates: SpeedFusion.Estimates): Boolean {
-        val pairs = listOf(
-            estimates.counterLongPctPerMin to estimates.currentPctPerMin,
-            estimates.counterShortPctPerMin to estimates.currentPctPerMin,
-            estimates.counterLongPctPerMin to estimates.levelPctPerMin,
-            estimates.counterShortPctPerMin to estimates.levelPctPerMin
-        )
+        val pairs = if (counterMode == CounterMode.COARSE) {
+            // Грубый счётчик: согласие только на длинном окне (10 минут) —
+            // короткие окна ловят 1%-шаг и фазовое отставание.
+            listOf(estimates.counterMaturePctPerMin to estimates.levelPctPerMin)
+        } else {
+            listOf(
+                estimates.counterLongPctPerMin to estimates.currentPctPerMin,
+                estimates.counterShortPctPerMin to estimates.currentPctPerMin,
+                estimates.counterLongPctPerMin to estimates.levelPctPerMin,
+                estimates.counterShortPctPerMin to estimates.levelPctPerMin
+            )
+        }
         return pairs.any { (a, b) ->
             a != null && b != null &&
                 SpeedFusion.divergence(a, b) <= ChargeForecaster.AGREE_TOLERANCE
@@ -501,6 +569,11 @@ internal class SessionEngine(
             ?: ChargePrior.ratePctPerMin(snapshot.chargeType)
         taperFactors = cache?.loadCurve(snapshot.chargeType) ?: TaperCurve.DEFAULT_FACTORS
         ccAccumulator.restore(snapshot.ccSpeedSum, snapshot.ccSampleCount)
+        // Режим счётчика — свойство устройства; профиль подтверждаем заново,
+        // длинное окно S1 начинается с нуля.
+        counterMode = runtimeStore?.loadCounterMode() ?: CounterMode.COARSE
+        counterProfile.reset(counterMode)
+        counterMature.reset()
         // Транзиенты не восстанавливаем: неполный снимок опаснее короткого
         // разгона после kill.
         emaCurrentUa = null
@@ -559,6 +632,8 @@ internal class SessionEngine(
         ccAccumulator.reset()
         displayFilter.reset()
         curveLearner.reset()
+        counterProfile.reset(counterMode)
+        counterMature.reset()
         lastTick = null
         lastAccuracy = null
         stalledTicks = 0

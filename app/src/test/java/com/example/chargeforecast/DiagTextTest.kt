@@ -15,7 +15,10 @@ class DiagTextTest {
     private fun tick(
         atMs: Long = 1_000L,
         s1Long: Float? = null,
-        s2: Float? = null
+        s2: Float? = null,
+        counterStepUah: Long? = null,
+        counterLagPct: Float? = null,
+        counterMode: String = "COARSE"
     ) = DiagTick(
         atMs = atMs,
         levelPct = 81,
@@ -26,6 +29,9 @@ class DiagTextTest {
         currentMa = 4f,
         counterUah = 3_268_000L,
         capacityUah = 4_035_200L,
+        counterStepUah = counterStepUah,
+        counterLagPct = counterLagPct,
+        counterMode = counterMode,
         s1ShortPctPerMin = 2.94f,
         s1LongPctPerMin = s1Long,
         s2PctPerMin = s2,
@@ -45,11 +51,12 @@ class DiagTextTest {
 
         assertEquals(
             "t=1000;lvl=81;plug=1;chg=1;full=0;type=AC;ma=4;cnt=3268000;cap=4035200;" +
+                "cstep=-;clag=-;cmode=COARSE;" +
                 "s1=2.94;s1l=-;s2=-;s3=3.01;fus=3.01;base=5.47;k=0.55;raw=676;shown=671;" +
                 "eff=-;acc=PRECISE;ref=0;ph=CHARGING",
             line
         )
-        assertEquals(22, line.split(";").size)
+        assertEquals(25, line.split(";").size)
     }
 
     @Test
@@ -61,6 +68,16 @@ class DiagTextTest {
         assertTrue(missing.contains("s1l=1.50"))
         assertTrue(missing.contains("s2=2.50"))
         assertTrue(missing.contains("t=5000"))
+    }
+
+    @Test
+    fun tickShowsCounterProfile() {
+        val line = DiagText.tick(
+            tick(counterStepUah = 40_970L, counterLagPct = 1.5f, counterMode = "COARSE")
+        )
+        assertTrue(line.contains("cstep=40970"))
+        assertTrue(line.contains("clag=1.50"))
+        assertTrue(line.contains("cmode=COARSE"))
     }
 
     @Test

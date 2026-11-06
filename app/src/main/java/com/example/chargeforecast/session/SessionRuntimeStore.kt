@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.os.SystemClock
 import com.example.chargeforecast.battery.ChargeType
+import com.example.chargeforecast.forecast.CounterMode
 import com.example.chargeforecast.forecast.DischargeSample
 import com.example.chargeforecast.forecast.DischargeState
 import com.example.chargeforecast.tracking.TrackingFailure
@@ -52,6 +53,16 @@ class SessionRuntimeStore(
 
     fun loadCapacity(): Long? =
         prefs.getLong(KEY_CAPACITY_UAH, -1L).takeIf { it > 0L }
+
+    // Режим счётчика — свойство устройства: переживает перезапуск процесса
+    // и новую сессию. Неизвестный/битый — null, движок возьмёт грубый.
+    fun saveCounterMode(mode: CounterMode) {
+        prefs.edit().putString(KEY_COUNTER_MODE, mode.name).apply()
+    }
+
+    fun loadCounterMode(): CounterMode? =
+        prefs.getString(KEY_COUNTER_MODE, null)
+            ?.let { raw -> runCatching { CounterMode.valueOf(raw) }.getOrNull() }
 
     // Состояние оценщика разряда: кольцо интервалов и якоря последнего
     // замера. bootCount отделяет шкалу elapsedRealtime одной загрузки
@@ -208,6 +219,7 @@ class SessionRuntimeStore(
         private const val KEY_BOOT_ELAPSED_MS = "boot_elapsed_realtime_ms"
 
         private const val KEY_CAPACITY_UAH = "capacity_uah"
+        private const val KEY_COUNTER_MODE = "counter_mode"
 
         private const val KEY_DISCHARGE_SAMPLES = "discharge_samples_v2"
         private const val KEY_DISCHARGE_LAST_SAMPLE_MS = "discharge_last_sample_ms"

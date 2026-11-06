@@ -4,6 +4,7 @@ import com.example.chargeforecast.battery.BatterySnapshot
 import com.example.chargeforecast.battery.ChargeType
 import com.example.chargeforecast.diag.DiagEvent
 import com.example.chargeforecast.diag.DiagEventKind
+import com.example.chargeforecast.forecast.CounterMode
 import com.example.chargeforecast.forecast.DischargeEstimate
 import com.example.chargeforecast.forecast.DischargeEstimator
 import com.example.chargeforecast.forecast.ForecastAccuracy
@@ -533,11 +534,12 @@ class SessionEngineTest {
             t += 1_000L
         }
         val st = last!!
-        assertEquals(
-            "скорость должна быть ≈2 %/мин, а не мусор 0.003",
-            2.0f,
-            st.forecast.speedPctPerMin!!,
-            0.3f
+        // Показываемая скорость — эффективная (остаток ÷ время), поэтому
+        // на грубом режиме она ниже мгновенных 2 %/мин; главное — не 0.003.
+        assertTrue(
+            "скорость должна быть около 1–2 %/мин, а не мусор 0.003; " +
+                "получили " + st.forecast.speedPctPerMin,
+            st.forecast.speedPctPerMin!! in 0.8f..2.5f
         )
         assertTrue(
             "остаток должен быть минуты (<15 мин), а не сотни часов; получили ${st.forecast.remainingSec}",
@@ -820,10 +822,11 @@ class SessionEngineTest {
         val engine = SessionEngine(onDiagEvent = { events += it })
 
         engine.update(snap(0L, 40, counterUah = 1_600_000L), 0L)
-        // Уровень без шага 2% — уточнения нет, события тоже нет.
+        // Короткое окно — уточнения нет, события тоже нет.
         engine.update(snap(5_000L, 41, counterUah = 1_640_000L), 5_000L)
         assertEquals(1, events.count { it.kind == DiagEventKind.CAPACITY })
-        engine.update(snap(10_000L, 42, counterUah = 1_684_000L), 10_000L)
+        // Δ10%: Δсчётчик 440k → 4.4 млн (+10%, в пределах шага).
+        engine.update(snap(10_000L, 50, counterUah = 2_040_000L), 10_000L)
 
         val capacityEvents = events.filter { it.kind == DiagEventKind.CAPACITY }
         assertEquals(2, capacityEvents.size)
@@ -831,8 +834,7 @@ class SessionEngineTest {
         assertTrue(capacityEvents.first().fields.contains("was=-"))
         val refined = capacityEvents.last().fields
         assertTrue(refined, refined.contains("was=4000000"))
-        // Δсчётчик 84k на Δуровень 2 → 4.2 млн (+5%, в пределах шага).
-        assertTrue(refined, refined.contains("now=4200000"))
+        assertTrue(refined, refined.contains("now=4400000"))
         assertTrue(refined, refined.contains("why=refined"))
     }
 
@@ -879,6 +881,47 @@ class SessionEngineTest {
         )
         assertEquals(ChargePhase.CHARGING, resumed.chargePhase)
         assertNotNull("прогноз вернулся", resumed.forecast.remainingSec)
+    }
+
+    @Test
+    fun counterMode_coarseOnOnePercentCounter_andEvent() {
+        val events = mutableListOf<DiagEvent>()
+        val engine = SessionEngine(onDiagEvent = { events += it })
+        var t = 0L
+        while (t <= 5_000L) {
+            val counter = 2_048_500L + (t / 1_000L) * 40_970L
+            engine.update(snap(t, 50, counterUah = counter), t)
+            t += 1_000L
+        }
+        assertEquals("COARSE", engine.lastTick!!.counterMode)
+        assertEquals(40_970L, engine.lastTick!!.counterStepUah)
+        assertTrue(
+            "событие профиля не записано",
+            events.any {
+                it.kind == DiagEventKind.COUNTER && it.fields.contains("mode=COARSE")
+            }
+        )
+    }
+
+    @Test
+    fun counterMode_survivesEngineRecreation() {
+        val runtime = SessionRuntimeStore(FakeSharedPreferences())
+        runtime.saveCounterMode(CounterMode.COARSE)
+        val first = SessionEngine(runtimeStore = runtime)
+        first.update(snap(0L, 50, counterUah = 2_048_500L), 0L)
+        assertEquals(CounterMode.COARSE, runtime.loadCounterMode())
+        val second = SessionEngine(runtimeStore = runtime)
+        second.update(snap(0L, 50, counterUah = 2_048_500L), 0L)
+        assertEquals("COARSE", second.lastTick!!.counterMode)
+    }
+
+    @Test
+    fun storedCapacity_inverted_isRejected() {
+        val runtime = SessionRuntimeStore(FakeSharedPreferences())
+        runtime.saveCapacity(2_731_333L)
+        val engine = SessionEngine(runtimeStore = runtime)
+        engine.update(snap(0L, 84, counterUah = 3_318_570L), 0L)
+        assertEquals(3_950_678L, engine.lastTick!!.capacityUah!!)
     }
 
     // Уравнение экрана (design D4): показанные остаток и скорость дают

@@ -1,6 +1,7 @@
 package com.example.chargeforecast
 
 import com.example.chargeforecast.battery.ChargeType
+import com.example.chargeforecast.forecast.CounterMode
 import com.example.chargeforecast.forecast.DischargeSample
 import com.example.chargeforecast.forecast.DischargeState
 import com.example.chargeforecast.session.ActiveSessionSnapshot
@@ -258,5 +259,16 @@ class SessionRuntimeStoreTest {
         assertFalse(keys.any { it.startsWith("summary_") })
         assertFalse(keys.any { it.startsWith("hist_") })
         assertFalse(keys.any { it.startsWith("curve_") })
+    }
+
+    @Test
+    fun counterMode_roundTrip() {
+        // Режим счётчика — свойство устройства: переживает перезапуск.
+        val store = SessionRuntimeStore(FakeSharedPreferences())
+        assertNull(store.loadCounterMode())
+        store.saveCounterMode(CounterMode.COARSE)
+        assertEquals(CounterMode.COARSE, store.loadCounterMode())
+        store.saveCounterMode(CounterMode.FINE)
+        assertEquals(CounterMode.FINE, store.loadCounterMode())
     }
 }

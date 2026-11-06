@@ -17,6 +17,11 @@ object DiagText {
         append(";ma=").append(tick.currentMa?.let { String.format(Locale.US, "%.0f", it) } ?: MISSING)
         append(";cnt=").append(tick.counterUah ?: MISSING)
         append(";cap=").append(tick.capacityUah ?: MISSING)
+        append(";cstep=").append(tick.counterStepUah ?: MISSING)
+        append(";clag=").append(
+            tick.counterLagPct?.let { String.format(Locale.US, "%.2f", it) } ?: MISSING
+        )
+        append(";cmode=").append(tick.counterMode)
         append(";s1=").append(speed(tick.s1ShortPctPerMin))
         append(";s1l=").append(speed(tick.s1LongPctPerMin))
         append(";s2=").append(speed(tick.s2PctPerMin))

@@ -69,6 +69,9 @@ class CounterSpeedometer(
         // Два окна (фаза 1): короткое — отклик, длинное — стабильность.
         const val WINDOW_MS = 2 * 60_000L
         const val WINDOW_SHORT_MS = 30_000L
+        // Длинное окно для гейта «точно» в грубом режиме (design D5):
+        // 1%-шаг счётчика на 10 минутах усредняется.
+        const val WINDOW_MATURE_MS = 10 * 60_000L
         // Физический минимум: второй тик опроса на 1 Гц (2 сек) — цифры
         // с первых секунд, шум ранних точек гасится весом и fusion.
         const val MIN_SPAN_MS = 2_000L
@@ -106,7 +109,11 @@ class CapacityTracker {
     fun update(
         counterUah: Long?,
         levelPct: Int,
-        designCapacityUah: Long? = null
+        designCapacityUah: Long? = null,
+        // Стартовая оценка из прошлой сессии (проверена инвариантом
+        // вызывающей стороной): сессия, начатая на высоком уровне, иначе
+        // стартует с заниженного «счётчик×100/уровень».
+        initialCapacityUah: Long? = null
     ): Long? {
         lastChange = null
         if (counterUah == null || counterUah <= 0) return estimateUah
@@ -121,7 +128,8 @@ class CapacityTracker {
         val current = estimateUah
         if (current == null) {
             val initial = sanitize(
-                InstantSpeedEstimator.estimateCapacityUah(counterUah, levelPct),
+                initialCapacityUah
+                    ?: InstantSpeedEstimator.estimateCapacityUah(counterUah, levelPct),
                 counterUah, design
             ) ?: return null
             estimateUah = initial
@@ -237,7 +245,10 @@ class CapacityTracker {
             .coerceIn(MIN_SANE_UAH, MAX_SANE_UAH)
 
     companion object {
-        const val REFINEMENT_MIN_DELTA_LEVEL = 2
+        // Длинное окно: на 1%-квантованном счётчике Δcounter/Δlevel на
+        // 2–5% — отношение малых целых, и ошибка ±1 шаг даёт 20–50%.
+        // На окне 10% та же ошибка — около 10%, и оценка не уезжает.
+        const val REFINEMENT_MIN_DELTA_LEVEL = 10
         // Шаг уточнения: не больше 12% текущей оценки за одно уточнение.
         const val MAX_STEP_PERCENT = 12L
         const val MAX_REJECTED_STEPS = 3

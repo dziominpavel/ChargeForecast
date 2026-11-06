@@ -2,9 +2,13 @@ package com.example.chargeforecast
 
 import com.example.chargeforecast.battery.BatterySnapshot
 import com.example.chargeforecast.battery.ChargeType
+import com.example.chargeforecast.battery.MIN_CREDIBLE_CURRENT_UA
+import com.example.chargeforecast.diag.DiagEvent
+import com.example.chargeforecast.diag.DiagEventKind
 import com.example.chargeforecast.forecast.ForecastAccuracy
 import com.example.chargeforecast.session.ChargePhase
 import com.example.chargeforecast.session.SessionEngine
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -29,7 +33,7 @@ class ForecastInvariantsTest {
                         val status = f[4]
                         BatterySnapshot(
                             levelPct = f[1].toInt(),
-                            isPlugged = true,
+                            isPlugged = status != "unplugged",
                             isCharging = status == "charging",
                             isFull = status == "full",
                             chargeType = ChargeType.valueOf(f[5]),
@@ -72,14 +76,22 @@ class ForecastInvariantsTest {
         org.junit.Assert.assertEquals(expected, actual)
 
     // Прогон движка по трассе с проверкой инвариантов на каждом тике.
-    private fun assertInvariants(trace: Trace, designCapacityUah: Long? = null) {
-        val engine = SessionEngine(sysfsCapacityUah = { designCapacityUah })
+    private fun assertInvariants(
+        trace: Trace,
+        designCapacityUah: Long? = null,
+        onEvent: (DiagEvent) -> Unit = {}
+    ) {
+        val engine = SessionEngine(
+            onDiagEvent = onEvent,
+            sysfsCapacityUah = { designCapacityUah }
+        )
         for (snap in trace.snapshots) {
             val state = engine.update(snap, snap.timestampMs)
             val tick = engine.lastTick
             val ctx = "${trace.name} t=${snap.timestampMs / 1000}с lvl=${snap.levelPct}"
             val counter = tick?.counterUah
             val capacity = tick?.capacityUah
+            val s3 = tick?.s3PctPerMin
             val notFull = !snap.isFull && snap.levelPct < 99
             // В STALLED прогноза зарядки нет по спеке — I3 к нему не
             // относится, но вход остаётся согласованным (I1 проверяется).
@@ -120,6 +132,17 @@ class ForecastInvariantsTest {
                     )
                 }
             }
+            if (s3 != null && s3 > 0.2f && snap.currentMa != null &&
+                snap.currentMa * 1000f < MIN_CREDIBLE_CURRENT_UA
+            ) {
+                // I6: мёртвый ток (ниже 50 мА) не тянет итоговую скорость
+                // в 0, когда уровень движется.
+                val fused = tick?.fusedPctPerMin
+                assertTrue(
+                    "$ctx: I6 мёртвый ток утопил скорость в $fused при S3=$s3",
+                    fused != null && fused > 0.5f * s3
+                )
+            }
             if (notFull && !stalled && state.forecast.accuracy == ForecastAccuracy.PRECISE) {
                 // I4: «точно» только на согласованном входе.
                 assertTrue(
@@ -143,6 +166,44 @@ class ForecastInvariantsTest {
     @Test
     fun cableWithoutCharging_invariantsHold() {
         assertInvariants(load("cable_no_charge.csv"))
+    }
+
+    @Test
+    fun realSession_hasExpectedShape() {
+        val snaps = snapshots(load("mna_lx9_5_to_84.csv"))
+        assertEqualsInt(3932, snaps.size)
+        assertEqualsInt(38, snaps.first().levelPct)
+        assertEqualsInt(84, snaps.last().levelPct)
+        assertEquals(3_318_570L, snaps.last().chargeCounterUah!!)
+        assertEqualsInt(5, snaps.minOf { it.levelPct })
+        // Финальный участок заряда 5→84 монотонен по уровню и счётчику.
+        val charge = snaps.dropWhile { it.levelPct > 5 }
+        assertTrue(
+            "финальный заряд не монотонен по уровню",
+            charge.zipWithNext().all { (a, b) -> b.levelPct >= a.levelPct }
+        )
+        assertTrue(
+            "финальный заряд не монотонен по счётчику",
+            charge.zipWithNext().all { (a, b) ->
+                b.chargeCounterUah!! >= a.chargeCounterUah!!
+            }
+        )
+    }
+
+    @Test
+    fun realSession_invariantsHold() {
+        val events = mutableListOf<DiagEvent>()
+        assertInvariants(
+            load("mna_lx9_5_to_84.csv"),
+            designCapacityUah = 4_097_000L,
+            onEvent = { events += it }
+        )
+        // I3 (ёмкость в коридоре) на реальной трассе: длинное окно не даёт
+        // оценке уехать — сбросов не больше двух.
+        val resets = events.count {
+            it.kind == DiagEventKind.CAPACITY && it.fields.contains("why=reset")
+        }
+        assertTrue("сбросов ёмкости " + resets + ", ожидали не больше двух", resets <= 2)
     }
 
     @Test

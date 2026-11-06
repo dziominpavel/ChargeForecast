@@ -16,6 +16,10 @@ data class DiagTick(
     val currentMa: Float?,
     val counterUah: Long?,
     val capacityUah: Long?,
+    // Профиль квантования счётчика: шаг, отставание и режим (COARSE/FINE).
+    val counterStepUah: Long? = null,
+    val counterLagPct: Float? = null,
+    val counterMode: String = "COARSE",
     // Три спидометра: S1 в двух окнах, S2 по току, S3 по уровню.
     val s1ShortPctPerMin: Float?,
     val s1LongPctPerMin: Float?,

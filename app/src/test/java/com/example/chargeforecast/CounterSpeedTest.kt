@@ -107,76 +107,67 @@ class CounterSpeedTest {
     }
 
     @Test
-    fun capacityTracker_initialAndRefinement() {
+    fun capacityTracker_initialAndLongWindowRefinement() {
         val tracker = CapacityTracker()
         assertEquals(4_000_000L, tracker.update(2_000_000L, 50))
-        // Сдвиг меньше 2% — держим стартовую оценку.
-        assertEquals(4_000_000L, tracker.update(2_040_000L, 51))
-        // Набрали 2%: Δ80k/2% → рефайн 4.0M, якорь сдвинулся.
-        assertEquals(4_000_000L, tracker.update(2_080_000L, 52))
-        // Дальше считаем от нового якоря.
-        assertEquals(4_000_000L, tracker.update(2_160_000L, 54))
+        // Короткое окно (2%) не уточняет: на 1%-счётчике это отношение
+        // малых целых, ошибка ±1 шаг даёт 20–50%.
+        assertEquals(4_000_000L, tracker.update(2_040_000L, 52))
+        assertNull(tracker.lastChange)
+        // Δ10%: 400k/10 → 4.0M, якорь сдвинулся.
+        assertEquals(4_000_000L, tracker.update(2_400_000L, 60))
+        assertEquals("refined", tracker.lastChange!!.reason)
     }
 
     @Test
-    fun capacityTracker_garbageKeptOut() {
+    fun capacityTracker_shortWindowsNeverRefine() {
         val tracker = CapacityTracker()
-        assertEquals(4_000_000L, tracker.update(2_000_000L, 50))
-        // Абсурдный скачок счётчика — оценку не ломаем.
-        assertEquals(4_000_000L, tracker.update(200_000_000L, 52))
-        assertNull(CapacityTracker().update(null, 50))
-        assertNull(CapacityTracker().update(2_000_000L, 0))
+        tracker.update(2_000_000L, 50)
+        tracker.update(2_040_000L, 52)
+        tracker.update(2_160_000L, 54)
+        tracker.update(2_320_000L, 58)
+        assertEquals(4_000_000L, tracker.update(2_360_000L, 59))
+        assertNull("на окне меньше 10% уточнения нет", tracker.lastChange)
     }
 
     @Test
-    fun capacityTracker_inversionUnreachableByOneStep() {
-        // Симптом «0 с на 81%»: счётчик 0.81 ёмкости, уточнение вниз
-        // (0.80 ёмкости) одним шагом обязано отклониться — иначе ёмкость
-        // оказывается меньше заряда в батарее.
+    fun capacityTracker_inversionRejectedOnLongWindow() {
         val tracker = CapacityTracker()
         assertEquals(4_030_000L, tracker.update(3_264_300L, 81))
-        // Δуровень 2 и Δсчётчик 64 480 дают кандидата 3 224 000 —
-        // меньше заряда в батарее 3 328 780: отказ по инварианту.
-        assertEquals(4_030_000L, tracker.update(3_328_780L, 83))
+        // Δ10%, Δсчётчик 64 480 → кандидат 644 800 меньше счётчика
+        // 3 328 780: отказ по инварианту.
+        assertEquals(4_030_000L, tracker.update(3_328_780L, 91))
         assertEquals("rejected-invariant", tracker.lastChange!!.reason)
-        // Шаг вниз больше 12% отклоняется и по эшеллону 3.
-        assertEquals(4_030_000L, tracker.update(3_328_780L, 84))
     }
 
     @Test
     fun capacityTracker_threeRejectionsResetToCurrentReading() {
-        // Оценка «уехала»: каждое уточнение расходится с текущей больше
-        // чем на 12% — три отказа подряд дают сброс к счётчик·100/уровень.
         val tracker = CapacityTracker()
         assertEquals(4_000_000L, tracker.update(2_000_000L, 50))
-        // Кандидат 5.0 млн (+25%) — отказ по шагу, оценка не меняется.
-        assertEquals(4_000_000L, tracker.update(2_100_000L, 52))
+        // Кандидат 5.0 млн (+25%) на длинном окне — отказ по шагу.
+        assertEquals(4_000_000L, tracker.update(2_500_000L, 60))
         assertEquals("rejected-step", tracker.lastChange!!.reason)
-        assertEquals(4_000_000L, tracker.update(2_200_000L, 54))
+        assertEquals(4_000_000L, tracker.update(3_000_000L, 70))
         // Третий отказ — сброс из текущих уровня и счётчика.
-        assertEquals(4_107_142L, tracker.update(2_300_000L, 56))
+        assertEquals(4_375_000L, tracker.update(3_500_000L, 80))
         assertEquals("reset-rejected", tracker.lastChange!!.reason)
         assertEquals(4_000_000L, tracker.lastChange!!.was)
     }
 
     @Test
     fun capacityTracker_passportCorridorWhenDesignKnown() {
-        // Паспортная ёмкость известна: кандидат вне коридора ±15%
-        // отклоняется, оценка остаётся прежней.
         val tracker = CapacityTracker()
         assertEquals(4_000_000L, tracker.update(800_000L, 20, 4_030_000L))
-        // 3.3 млн — ниже 85% от 4.03 млн (3.4255 млн).
-        assertEquals(4_000_000L, tracker.update(866_000L, 22, 4_030_000L))
+        // Δ10%, кандидат 3.0 млн — ниже 85% от 4.03 млн (3.4255 млн).
+        assertEquals(4_000_000L, tracker.update(1_100_000L, 30, 4_030_000L))
         assertEquals("rejected-passport", tracker.lastChange!!.reason)
     }
 
     @Test
     fun capacityTracker_withoutDesignCorridorUsesStepAndSanity() {
-        // design = null (устройство без паспортной ёмкости): тот же
-        // кандидат отклоняется шагом — 17.5% против допустимых 12%.
         val tracker = CapacityTracker()
         assertEquals(4_000_000L, tracker.update(800_000L, 20))
-        assertEquals(4_000_000L, tracker.update(866_000L, 22))
+        assertEquals(4_000_000L, tracker.update(1_100_000L, 30))
         assertEquals("rejected-step", tracker.lastChange!!.reason)
     }
 
@@ -186,6 +177,18 @@ class CounterSpeedTest {
         // 640k/20% дал бы 3.2 млн, а нижняя граница ±15% — 3.4 млн.
         val tracker = CapacityTracker()
         assertEquals(3_400_000L, tracker.update(640_000L, 20, 4_000_000L))
+    }
+
+    @Test
+    fun capacityTracker_seedsFromStoredCapacity() {
+        // Сохранённая ёмкость проходит инвариант и служит стартом: сессия
+        // на 84% не стартует с заниженного счётчик×100/уровень.
+        val tracker = CapacityTracker()
+        assertEquals(
+            4_097_000L,
+            tracker.update(3_318_570L, 84, initialCapacityUah = 4_097_000L)
+        )
+        assertEquals("init", tracker.lastChange!!.reason)
     }
 
     @Test
